@@ -1,0 +1,30 @@
+deepseekapi.txt
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.test-tmp/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# Node.js
+node_modules/
+.next/
+
+# Local data and generated files
+data/
+storage/
+*.db
+*.sqlite3
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
