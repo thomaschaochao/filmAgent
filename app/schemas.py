@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +16,16 @@ class ProjectCreate(BaseModel):
     language: str = "zh-CN"
     aspect_ratio: str = "16:9"
     visual_style: str = "cinematic storyboard"
+    world_setting: str = ""
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    language: str | None = None
+    aspect_ratio: str | None = None
+    visual_style: str | None = None
+    world_setting: str | None = None
 
 
 class ProjectRead(ProjectCreate, ORMModel):
@@ -22,6 +33,41 @@ class ProjectRead(ProjectCreate, ORMModel):
     status: ProjectStatus
     created_at: datetime
     updated_at: datetime
+
+
+AssetType = Literal["character", "location", "prop"]
+
+
+class AssetCreate(BaseModel):
+    asset_type: AssetType
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    prompt: str = ""
+
+
+class AssetUpdate(BaseModel):
+    asset_type: AssetType | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    prompt: str | None = None
+
+
+class AssetRead(AssetCreate, ORMModel):
+    id: str
+    project_id: str
+    image_url: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssetDraft(BaseModel):
+    asset_type: AssetType
+    name: str = Field(min_length=1, max_length=200)
+    description: str
+
+
+class AssetExtractionDraft(BaseModel):
+    assets: list[AssetDraft]
 
 
 class ScriptCreate(BaseModel):
@@ -115,6 +161,7 @@ class PromptDraft(BaseModel):
     negative_prompt: str = ""
     model_target: str = "generic"
     components: dict[str, str] = Field(default_factory=dict)
+    asset_references: list[str] = Field(default_factory=list)
 
 
 class PromptRead(ORMModel):

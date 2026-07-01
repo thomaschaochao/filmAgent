@@ -30,6 +30,7 @@ class ProjectStatus(StrEnum):
     draft_script = "DRAFT_SCRIPT"
     script_review = "SCRIPT_REVIEW"
     script_approved = "SCRIPT_APPROVED"
+    asset_review = "ASSET_REVIEW"
     shot_list_review = "SHOT_LIST_REVIEW"
     prompt_review = "PROMPT_REVIEW"
     completed = "COMPLETED"
@@ -44,6 +45,7 @@ class Project(Base):
     language: Mapped[str] = mapped_column(String(32), default="zh-CN")
     aspect_ratio: Mapped[str] = mapped_column(String(16), default="16:9")
     visual_style: Mapped[str] = mapped_column(Text, default="cinematic storyboard")
+    world_setting: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus), default=ProjectStatus.draft_script
     )
@@ -58,6 +60,32 @@ class Project(Base):
     scenes: Mapped[list["Scene"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    assets: Mapped[list["Asset"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="Asset.name"
+    )
+
+
+class Asset(Base):
+    __tablename__ = "assets"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_asset_project_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    asset_type: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="assets")
+
+    @property
+    def image_url(self) -> str | None:
+        return f"/storage/{self.image_path}" if self.image_path else None
 
 
 class ScriptVersion(Base):

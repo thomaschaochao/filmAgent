@@ -1,0 +1,470 @@
+const API = "/api/v1";
+
+const state = {
+  projects: [], project: null, scripts: [], script: null, assets: [], scenes: [],
+  prompts: new Map(), step: "project", scriptMode: "manual",
+};
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const esc = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+const formatPromptPreview = (value = "") => String(value)
+  .replace(/\r\n?/g, "\n")
+  .replace(/([。！？；])/g, "$1\n")
+  .replace(/([,，])\s*/g, "$1\n")
+  .replace(/\n{3,}/g, "\n\n")
+  .trim();
+const statusLabels = { DRAFT_SCRIPT: "项目草稿", SCRIPT_REVIEW: "剧本待确认", SCRIPT_APPROVED: "剧本已确认", ASSET_REVIEW: "资产整理中", SHOT_LIST_REVIEW: "分镜设计中", PROMPT_REVIEW: "提示词制作中", COMPLETED: "制作完成" };
+const assetTypeLabels = { character: "人物", location: "场景", prop: "道具" };
+
+async function request(path, options = {}) {
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  if (!response.ok) {
+    let message = `请求失败（${response.status}）`;
+    try { const data = await response.json(); message = data.detail || message; } catch (_) {}
+    throw new Error(message);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+function toast(message, type = "success") {
+  const node = document.createElement("div");
+  node.className = `toast ${type}`;
+  node.textContent = message;
+  $("#toast-region").append(node);
+  setTimeout(() => node.remove(), 3500);
+}
+
+function loading(show, title = "AI 正在工作", copy = "这可能需要一点时间，请不要关闭页面") {
+  $("#loading-title").textContent = title;
+  $("#loading-copy").textContent = copy;
+  $("#loading-layer").hidden = !show;
+}
+
+async function setStep(step) {
+  state.step = step;
+  const order = ["project", "script", "assets", "shots", "prompts"];
+  const current = order.indexOf(step);
+  $$(".workflow-step").forEach((node, index) => {
+    node.classList.toggle("active", index === current);
+    node.classList.toggle("done", index < current);
+  });
+  if (step === "prompts" && state.scenes.length) {
+    loading(true, "正在读取提示词", "正在同步全部镜头的提示词历史");
+    try {
+      await loadAllPrompts();
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      loading(false);
+    }
+  }
+  render();
+}
+
+function renderSidebar() {
+  $("#project-count").textContent = state.projects.length;
+  $("#project-list").innerHTML = state.projects.length ? state.projects.map(project => `
+    <button type="button" class="project-item ${state.project?.id === project.id ? "active" : ""}" data-project-id="${project.id}">
+      <strong>${esc(project.name)}</strong><small>${esc(statusLabels[project.status] || project.status)} · ${esc(project.aspect_ratio)}</small>
+    </button>`).join("") : `<div class="prompt-empty">还没有项目，先创建一部影片。</div>`;
+}
+
+function renderHeader() {
+  $("#current-project-title").textContent = state.project?.name || "选择一个项目";
+  $("#project-meta").innerHTML = state.project ? `<span class="meta-chip">${esc(state.project.aspect_ratio)}</span><span class="meta-chip">${esc(state.project.language)}</span><span class="meta-chip">${esc(statusLabels[state.project.status] || state.project.status)}</span>` : "";
+}
+
+function renderWorkflow() {
+  const approvedScript = state.scripts.some(script => script.is_approved);
+  const availability = {
+    project: true,
+    script: Boolean(state.project),
+    assets: approvedScript,
+    shots: approvedScript,
+    prompts: state.scenes.length > 0,
+  };
+  $$(".workflow-step").forEach(node => {
+    node.disabled = !availability[node.dataset.step];
+    node.title = node.disabled ? {
+      script: "请先创建或选择项目",
+      assets: "请先确认一个剧本版本",
+      shots: "请先确认一个剧本版本",
+      prompts: "请先生成分镜",
+    }[node.dataset.step] : "";
+  });
+}
+
+function render() {
+  renderSidebar(); renderHeader(); renderWorkflow();
+  const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts };
+  views[state.step]();
+}
+
+function renderProject() {
+  if (!state.project) {
+    $("#content").innerHTML = `<div class="empty-state"><div><div class="empty-state-icon">◉</div><h2>从一个故事开始</h2><p>创建影片项目，确定画幅和视觉方向，再让 AI 帮你完成剧本与分镜。</p><button class="button primary" data-action="new-project">创建第一个项目</button></div></div>`;
+    return;
+  }
+  const p = state.project;
+  $("#content").innerHTML = `
+    <div class="section-head"><div><span class="eyebrow">PRODUCTION OVERVIEW</span><h2>项目设定</h2><p>这是后续剧本、分镜和提示词共用的创作基准。</p></div><div class="actions"><button class="button" data-action="edit-project">编辑项目设定</button><button class="button primary" data-step-next="script">进入剧本创作 →</button></div></div>
+    <div class="overview-grid">
+      <article class="panel project-card"><span class="tag">${esc(statusLabels[p.status] || p.status)}</span><h3>${esc(p.name)}</h3><p>${esc(p.description || "尚未填写故事简介。你仍然可以在剧本阶段直接开始创作。")}</p></article>
+      <aside class="panel details-card"><span class="eyebrow">CREATIVE PROFILE</span><div class="details-list"><div class="detail-row"><span>世界与地域设定</span><strong>${esc(p.world_setting || "尚未设定")}</strong></div><div class="detail-row"><span>视觉风格</span><strong>${esc(p.visual_style)}</strong></div><div class="detail-row"><span>输出画幅</span><strong>${esc(p.aspect_ratio)}</strong></div><div class="detail-row"><span>创作语言</span><strong>${esc(p.language)}</strong></div><div class="detail-row"><span>当前阶段</span><strong>${esc(statusLabels[p.status] || p.status)}</strong></div></div></aside>
+    </div>`;
+}
+
+function renderScript() {
+  if (!state.project) return renderProject();
+  const current = state.script || state.scripts[0];
+  const approved = current?.is_approved;
+  $("#content").innerHTML = `
+    <div class="section-head"><div><span class="eyebrow">SCREENPLAY DESK</span><h2>剧本创作</h2><p>手动撰写，或给 AI 一个故事梗概。确认后才能进入分镜。</p></div><div class="actions"><div class="mode-tabs"><button class="mode-tab ${state.scriptMode === "manual" ? "active" : ""}" data-script-mode="manual">手动撰写</button><button class="mode-tab ${state.scriptMode === "ai" ? "active" : ""}" data-script-mode="ai">AI 生成</button></div>${current ? `<button class="button primary" data-action="approve-script" ${approved ? "disabled" : ""}>${approved ? "✓ 已确认" : "确认此版剧本"}</button>` : ""}</div></div>
+    ${state.scriptMode === "ai" ? `<div class="panel ai-brief"><div class="form-grid"><label>剧本标题<input id="ai-title" value="${esc(current?.title || state.project.name)}"></label><label>额外要求<input id="ai-instructions" placeholder="例如：约 3 分钟，减少对白"></label></div><label>故事梗概<textarea id="ai-brief" rows="4" placeholder="描述人物、冲突和你想要的结局……">${esc(state.project.description || "")}</textarea></label><button class="button primary" data-action="generate-script">让 AI 生成剧本</button></div>` : ""}
+    <div class="script-layout">
+      <section class="panel editor-panel"><div class="editor-toolbar"><input id="script-title" value="${esc(current?.title || state.project.name)}" aria-label="剧本标题"><span>${current ? `VERSION ${current.version}` : "NEW DRAFT"}</span></div><textarea id="script-content" class="script-editor" placeholder="场景一：\n\n在这里开始写你的故事……">${esc(current?.content || "")}</textarea><div class="editor-toolbar"><span id="script-stats">${current?.content?.length || 0} 字</span><button class="button" data-action="save-script">保存为新版本</button></div></section>
+      <aside class="panel version-panel"><h3>剧本版本</h3><div class="version-list">${state.scripts.length ? state.scripts.map(s => `<button class="version-item ${current?.id === s.id ? "active" : ""}" data-script-id="${s.id}"><strong>V${s.version} · ${esc(s.title)}</strong>${s.is_approved ? `<span class="approved-badge">✓</span>` : ""}<small>${s.source_type === "ai" ? "AI 生成" : "手动创作"} · ${new Date(s.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})}</small></button>`).join("") : `<p class="prompt-empty">保存后会在这里记录版本。</p>`}</div></aside>
+    </div>`;
+}
+
+function renderAssets() {
+  if (!state.project) return renderProject();
+  const approved = state.scripts.some(script => script.is_approved);
+  $("#content").innerHTML = `
+    <div class="section-head"><div><span class="eyebrow">VISUAL ASSET LIBRARY</span><h2>资产管理</h2><p>统一管理人物、场景和道具。镜头提示词会使用 @名称 引用对应资产。</p></div><div class="actions"><button class="button" data-action="new-asset">＋ 手动添加</button><button class="button" data-action="extract-assets" ${approved ? "" : "disabled"}>AI 从剧本提取</button>${state.assets.length ? `<button class="button primary" data-action="generate-all-asset-prompts">一键生成全部资产提示词</button>` : ""}<button class="button" data-step-next="shots">进入分镜设计 →</button></div></div>
+    ${!approved ? `<div class="empty-state"><div><div class="empty-state-icon">03</div><h2>需要先确认剧本</h2><p>确认剧本后才能提取其中的人物、场景与关键道具。</p><button class="button primary" data-step-next="script">返回剧本</button></div></div>` : !state.assets.length ? `<div class="empty-state"><div><div class="empty-state-icon">@</div><h2>建立视觉资产库</h2><p>让 AI 从剧本提取资产，或手动添加一个人物、场景或道具。</p><div class="actions"><button class="button" data-action="new-asset">手动添加</button><button class="button primary" data-action="extract-assets">AI 从剧本提取</button></div></div></div>` : ["character", "location", "prop"].map(type => {
+      const assets = state.assets.filter(asset => asset.asset_type === type);
+      if (!assets.length) return "";
+      return `<section class="asset-section"><header class="asset-section-head"><h3>${assetTypeLabels[type]}</h3><span>${assets.length} ASSETS</span></header><div class="asset-grid">${assets.map(asset => `
+        <article class="panel asset-card"><div class="asset-image">${asset.image_url ? `<img src="${esc(asset.image_url)}" alt="${esc(asset.name)}参考图">` : `<span>${type === "character" ? "人" : type === "location" ? "景" : "物"}</span>`}</div><div class="asset-content"><span class="asset-ref">@${esc(asset.name)}</span><h4>${esc(asset.name)}</h4><p>${esc(asset.description || "尚未填写视觉描述")}</p><div class="asset-prompt-preview">${esc(asset.prompt ? asset.prompt.slice(0, 110) : "尚未生成资产提示词")}${asset.prompt?.length > 110 ? "…" : ""}</div></div><div class="asset-actions"><button class="button" data-edit-asset="${asset.id}">编辑</button><button class="button" data-asset-prompt="${asset.id}">AI 生成提示词</button>${asset.prompt ? `<button class="button" data-preview-asset-prompt="${asset.id}">完整预览</button><button class="button" data-copy-asset-prompt="${asset.id}">复制提示词</button>` : ""}<label class="button upload-button">上传参考图<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-asset-upload="${asset.id}"></label></div></article>`).join("")}</div></section>`;
+    }).join("")}`;
+}
+
+function renderShots() {
+  if (!state.project) return renderProject();
+  const approved = state.scripts.find(s => s.is_approved);
+  $("#content").innerHTML = `
+    <div class="section-head"><div><span class="eyebrow">DIRECTOR'S BOARD</span><h2>分镜设计</h2><p>${state.scenes.length ? `共 ${state.scenes.length} 个场次、${state.scenes.reduce((n,s)=>n+s.shots.length,0)} 个镜头。点击卡片可编辑。` : "确认剧本后，让 AI 将叙事拆解为可绘制的镜头。"}</p></div><div class="actions"><button class="button primary" data-action="generate-shots" ${approved ? "" : "disabled"}>${state.scenes.length ? "重新拆分分镜" : "AI 拆分分镜"}</button><button class="button" data-step-next="prompts" ${state.scenes.length ? "" : "disabled"}>查看提示词 →</button></div></div>
+    ${!approved ? `<div class="empty-state"><div><div class="empty-state-icon">02</div><h2>需要先确认剧本</h2><p>返回剧本创作，选择一个满意版本并确认。</p><button class="button primary" data-step-next="script">返回剧本</button></div></div>` : !state.scenes.length ? `<div class="empty-state"><div><div class="empty-state-icon">◫</div><h2>导演板还是空的</h2><p>AI 会分析已确认剧本，并创建场次与镜头卡片。</p><button class="button primary" data-action="generate-shots">开始拆分分镜</button></div></div>` : state.scenes.map(scene => `
+      <section class="scene"><header class="scene-head"><span class="scene-number">SCENE ${String(scene.sequence).padStart(2,"0")}</span><h3>${esc(scene.heading)}</h3><small>${esc([scene.location, scene.time_of_day].filter(Boolean).join(" · "))}</small></header><div class="shots-grid">${scene.shots.map(shot => `
+        <article class="panel shot-card ${shot.is_locked ? "locked" : ""}" data-shot-id="${shot.id}"><div class="shot-top"><span class="shot-id">SHOT ${String(shot.sequence).padStart(2,"0")}</span><div class="shot-tags"><span>${esc(shot.shot_size)}</span><span>${esc(shot.camera_angle)}</span></div></div><h4>${esc(shot.subject)}</h4><p>${esc(shot.action)}</p><div class="shot-footer"><span>${esc(shot.camera_motion)}</span><span>${shot.is_locked ? "● 已锁定" : "编辑镜头 ↗"}</span></div></article>`).join("")}</div></section>`).join("")}`;
+}
+
+function renderPrompts() {
+  if (!state.project) return renderProject();
+  const shots = state.scenes.flatMap(scene => scene.shots.map(shot => ({ ...shot, scene })));
+  $("#content").innerHTML = `
+    <div class="section-head"><div><span class="eyebrow">PROMPT LAB</span><h2>故事板提示词</h2><p>按镜头生成适配图像模型的正向、负向提示词，并保留历史版本。</p></div><div class="actions"><button class="button" data-step-next="shots">← 返回分镜</button>${shots.length ? `<button class="button primary" data-action="generate-all-prompts">一键生成全部提示词</button>` : ""}</div></div>
+    ${!shots.length ? `<div class="empty-state"><div><div class="empty-state-icon">03</div><h2>还没有可用镜头</h2><p>先完成分镜拆分，再为每个镜头生成提示词。</p><button class="button primary" data-step-next="shots">前往分镜设计</button></div></div>` : `<div class="prompt-list">${shots.map((shot, index) => { const versions = state.prompts.get(shot.id) || []; const prompt = versions[0]; return `
+      <article class="panel prompt-card"><div class="prompt-shot"><span class="shot-id">${esc(shot.scene.heading)} · SHOT ${String(shot.sequence).padStart(2,"0")}</span><h3>${esc(shot.subject)}</h3><p>${esc(shot.action)}</p></div><div class="prompt-body">${prompt ? `<label>POSITIVE PROMPT · V${prompt.version}</label><div class="prompt-text">${esc(prompt.positive_prompt)}</div>${prompt.negative_prompt ? `<label>NEGATIVE PROMPT</label><div class="prompt-text negative">${esc(prompt.negative_prompt)}</div>` : ""}` : `<div class="prompt-empty">这个镜头尚未生成提示词。</div>`}</div><div>${prompt ? `<button class="button copy-button" data-copy="${index}">复制</button>` : `<button class="button primary" data-generate-prompt="${shot.id}">生成提示词</button>`}</div></article>`; }).join("")}</div>`}`;
+  window.currentPromptShots = shots;
+}
+
+async function loadProjects(selectId = null) {
+  state.projects = await request("/projects");
+  if (selectId) await selectProject(selectId);
+  else if (state.projects.length) await selectProject(state.projects[0].id);
+  else render();
+}
+
+async function selectProject(id) {
+  state.project = state.projects.find(p => p.id === id) || await request(`/projects/${id}`);
+  [state.scripts, state.assets, state.scenes] = await Promise.all([
+    request(`/projects/${id}/scripts`),
+    request(`/projects/${id}/assets`),
+    request(`/projects/${id}/scenes`),
+  ]);
+  state.script = state.scripts[0] || null;
+  state.prompts.clear();
+  render();
+}
+
+async function loadAllPrompts() {
+  const shots = state.scenes.flatMap(s => s.shots);
+  await Promise.all(shots.map(async shot => state.prompts.set(shot.id, await request(`/shots/${shot.id}/prompts`))));
+}
+
+function openShotDialog(shot) {
+  $("#shot-form").innerHTML = `<div class="dialog-head"><div><span class="eyebrow">SHOT EDITOR</span><h2>编辑镜头 ${String(shot.sequence).padStart(2,"0")}</h2></div><button class="icon-button" type="button" data-close-dialog>×</button></div><input type="hidden" name="id" value="${shot.id}"><div class="shot-form-grid">
+    <label>主体<input name="subject" value="${esc(shot.subject)}"></label><label>动作<input name="action" value="${esc(shot.action)}"></label><label class="span-2">环境<textarea name="environment" rows="2">${esc(shot.environment)}</textarea></label><label>景别<input name="shot_size" value="${esc(shot.shot_size)}"></label><label>机位角度<input name="camera_angle" value="${esc(shot.camera_angle)}"></label><label>镜头运动<input name="camera_motion" value="${esc(shot.camera_motion)}"></label><label>情绪<input name="emotion" value="${esc(shot.emotion)}"></label><label>光线<input name="lighting" value="${esc(shot.lighting)}"></label><label>对白<input name="dialogue" value="${esc(shot.dialogue)}"></label><label class="span-2">连续性要求<textarea name="continuity" rows="2">${esc(shot.continuity)}</textarea></label><label><input type="checkbox" name="is_locked" ${shot.is_locked ? "checked" : ""}> 锁定这个镜头</label></div><div class="dialog-actions"><button class="button ghost" type="button" data-close-dialog>取消</button><button class="button primary" type="submit" value="default">保存修改</button></div>`;
+  $("#shot-dialog").showModal();
+}
+
+function openProjectDialog(project = null) {
+  const form = $("#project-form");
+  form.dataset.projectId = project?.id || "";
+  $("#project-dialog-eyebrow").textContent = project ? "EDIT PRODUCTION" : "NEW PRODUCTION";
+  $("#project-dialog-title").textContent = project ? "编辑项目设定" : "创建影片项目";
+  $("#project-submit-button").textContent = project ? "保存设定" : "创建项目";
+  form.elements.name.value = project?.name || "";
+  form.elements.description.value = project?.description || "";
+  form.elements.aspect_ratio.value = project?.aspect_ratio || "16:9";
+  form.elements.language.value = project?.language || "zh-CN";
+  form.elements.visual_style.value = project?.visual_style || "电影感写实故事板";
+  form.elements.world_setting.value = project?.world_setting || "";
+  $("#project-dialog").showModal();
+}
+
+function openAssetDialog(asset = null) {
+  const form = $("#asset-form");
+  form.dataset.assetId = asset?.id || "";
+  $("#asset-dialog-eyebrow").textContent = asset ? "EDIT ASSET" : "NEW ASSET";
+  $("#asset-dialog-title").textContent = asset ? `编辑 @${asset.name}` : "新建视觉资产";
+  form.elements.asset_type.value = asset?.asset_type || "character";
+  form.elements.name.value = asset?.name || "";
+  form.elements.description.value = asset?.description || "";
+  form.elements.prompt.value = asset?.prompt || "";
+  $("#delete-asset-button").hidden = !asset;
+  $("#asset-dialog").showModal();
+}
+
+function openAssetPromptPreview(asset) {
+  $("#asset-prompt-preview-title").textContent = `@${asset.name} · 完整提示词`;
+  $("#asset-prompt-preview-content").textContent = formatPromptPreview(asset.prompt);
+  $("#asset-prompt-dialog").dataset.assetId = asset.id;
+  $("#asset-prompt-dialog").showModal();
+}
+
+// Closing a dialog must never enter form validation or asynchronous business handling.
+document.addEventListener("click", event => {
+  const closeButton = event.target.closest("[data-close-dialog]");
+  if (!closeButton) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeButton.closest("dialog")?.close();
+}, true);
+
+document.addEventListener("click", async event => {
+  const projectButton = event.target.closest("[data-project-id]");
+  const stepButton = event.target.closest("[data-step], [data-step-next]");
+  const actionButton = event.target.closest("[data-action]");
+  const modeButton = event.target.closest("[data-script-mode]");
+  const versionButton = event.target.closest("[data-script-id]");
+  const editAssetButton = event.target.closest("[data-edit-asset]");
+  const assetPromptButton = event.target.closest("[data-asset-prompt]");
+  const previewAssetPromptButton = event.target.closest("[data-preview-asset-prompt]");
+  const copyAssetPromptButton = event.target.closest("[data-copy-asset-prompt]");
+  const shotCard = event.target.closest("[data-shot-id]");
+  try {
+    if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
+    else if (stepButton && !stepButton.disabled) setStep(stepButton.dataset.step || stepButton.dataset.stepNext);
+    else if (modeButton) { state.scriptMode = modeButton.dataset.scriptMode; renderScript(); }
+    else if (versionButton) { state.script = state.scripts.find(s => s.id === versionButton.dataset.scriptId); renderScript(); }
+    else if (editAssetButton) openAssetDialog(state.assets.find(asset => asset.id === editAssetButton.dataset.editAsset));
+    else if (assetPromptButton) await generateAssetPrompt(assetPromptButton.dataset.assetPrompt);
+    else if (previewAssetPromptButton) openAssetPromptPreview(state.assets.find(asset => asset.id === previewAssetPromptButton.dataset.previewAssetPrompt));
+    else if (copyAssetPromptButton) {
+      const asset = state.assets.find(item => item.id === copyAssetPromptButton.dataset.copyAssetPrompt);
+      await navigator.clipboard.writeText(asset.prompt);
+      toast(`@${asset.name} 的提示词已复制`);
+    }
+    else if (shotCard) openShotDialog(state.scenes.flatMap(s => s.shots).find(s => s.id === shotCard.dataset.shotId));
+    else if (event.target.closest("#new-project-button") || actionButton?.dataset.action === "new-project") openProjectDialog();
+    else if (actionButton?.dataset.action === "edit-project") openProjectDialog(state.project);
+    else if (actionButton?.dataset.action === "new-asset") openAssetDialog();
+    else if (actionButton?.dataset.action === "extract-assets") await extractProjectAssets();
+    else if (actionButton?.dataset.action === "generate-all-asset-prompts") await generateAllAssetPrompts();
+    else if (actionButton?.dataset.action === "save-script") await saveScript();
+    else if (actionButton?.dataset.action === "generate-script") await generateScript();
+    else if (actionButton?.dataset.action === "approve-script") await approveScript();
+    else if (actionButton?.dataset.action === "generate-shots") await generateShots();
+    else if (actionButton?.dataset.action === "generate-all-prompts") await generateAllPrompts();
+    else if (event.target.closest("[data-generate-prompt]")) await generatePrompt(event.target.closest("[data-generate-prompt]").dataset.generatePrompt);
+    else if (event.target.closest("[data-copy]")) {
+      const shot = window.currentPromptShots[Number(event.target.closest("[data-copy]").dataset.copy)];
+      await navigator.clipboard.writeText(state.prompts.get(shot.id)[0].positive_prompt); toast("提示词已复制");
+    }
+  } catch (error) { loading(false); toast(error.message, "error"); }
+});
+
+$("#project-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const projectId = event.currentTarget.dataset.projectId;
+  try {
+    const project = await request(projectId ? `/projects/${projectId}` : "/projects", {
+      method: projectId ? "PATCH" : "POST",
+      body: JSON.stringify(data),
+    });
+    $("#project-dialog").close();
+    event.currentTarget.reset();
+    event.currentTarget.dataset.projectId = "";
+    if (projectId) {
+      state.project = project;
+      state.projects = state.projects.map(item => item.id === project.id ? project : item);
+      render();
+      toast("项目设定已更新");
+    } else {
+      await loadProjects(project.id);
+      setStep("project");
+      toast("项目创建成功");
+    }
+  } catch (error) { toast(error.message, "error"); }
+});
+
+$("#asset-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const assetId = event.currentTarget.dataset.assetId;
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    const asset = await request(assetId ? `/assets/${assetId}` : `/projects/${state.project.id}/assets`, {
+      method: assetId ? "PATCH" : "POST",
+      body: JSON.stringify(data),
+    });
+    if (assetId) state.assets = state.assets.map(item => item.id === asset.id ? asset : item);
+    else state.assets.push(asset);
+    $("#asset-dialog").close();
+    renderAssets();
+    toast(assetId ? "资产已更新" : "资产已创建");
+  } catch (error) { toast(error.message, "error"); }
+});
+
+$("#delete-asset-button").addEventListener("click", async () => {
+  const assetId = $("#asset-form").dataset.assetId;
+  if (!assetId || !window.confirm("确定删除这个资产及其参考图吗？")) return;
+  try {
+    await request(`/assets/${assetId}`, { method: "DELETE" });
+    state.assets = state.assets.filter(asset => asset.id !== assetId);
+    $("#asset-dialog").close();
+    renderAssets();
+    toast("资产已删除");
+  } catch (error) { toast(error.message, "error"); }
+});
+
+$("#copy-previewed-asset-prompt").addEventListener("click", async () => {
+  const asset = state.assets.find(item => item.id === $("#asset-prompt-dialog").dataset.assetId);
+  if (!asset?.prompt) return;
+  try {
+    await navigator.clipboard.writeText(asset.prompt);
+    toast(`@${asset.name} 的完整提示词已复制`);
+  } catch (error) { toast("复制失败，请检查浏览器剪贴板权限", "error"); }
+});
+
+document.addEventListener("change", async event => {
+  const input = event.target.closest("[data-asset-upload]");
+  if (!input || !input.files?.[0]) return;
+  const file = input.files[0];
+  try {
+    loading(true, `正在上传 @${state.assets.find(asset => asset.id === input.dataset.assetUpload)?.name || "资产"}`, "参考图将保存在本地资产库");
+    const asset = await request(`/assets/${input.dataset.assetUpload}/image`, {
+      method: "PUT",
+      headers: { "Content-Type": file.type },
+      body: file,
+    });
+    state.assets = state.assets.map(item => item.id === asset.id ? asset : item);
+    loading(false);
+    renderAssets();
+    toast("参考图已上传");
+  } catch (error) { loading(false); toast(error.message, "error"); }
+});
+
+$("#shot-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget); const id = form.get("id"); const payload = Object.fromEntries(form); delete payload.id; payload.is_locked = form.has("is_locked");
+  try { await request(`/shots/${id}`, { method: "PATCH", body: JSON.stringify(payload) }); $("#shot-dialog").close(); state.scenes = await request(`/projects/${state.project.id}/scenes`); renderShots(); toast("镜头修改已保存"); } catch (error) { toast(error.message, "error"); }
+});
+
+async function saveScript() {
+  const title = $("#script-title").value.trim(); const content = $("#script-content").value.trim();
+  if (!content) return toast("请先填写剧本内容", "error");
+  const script = await request(`/projects/${state.project.id}/scripts`, { method: "POST", body: JSON.stringify({ title: title || "未命名剧本", content, source_type: "user" }) });
+  state.scripts = await request(`/projects/${state.project.id}/scripts`); state.script = script; state.project.status = "SCRIPT_REVIEW"; renderScript(); renderSidebar(); renderHeader(); toast("已保存为新版本");
+}
+
+async function generateScript() {
+  const brief = $("#ai-brief").value.trim(); if (!brief) return toast("请填写故事梗概", "error");
+  loading(true, "AI 正在创作剧本", "正在组织场景、人物与对白");
+  const script = await request(`/projects/${state.project.id}/scripts/generate`, { method: "POST", body: JSON.stringify({ brief, title: $("#ai-title").value.trim() || state.project.name, instructions: $("#ai-instructions").value.trim() }) });
+  loading(false); state.scripts = await request(`/projects/${state.project.id}/scripts`); state.script = script; state.scriptMode = "manual"; renderScript(); toast("AI 剧本已生成");
+}
+
+async function approveScript() {
+  if (!state.script) return;
+  state.script = await request(`/scripts/${state.script.id}/approve`, { method: "POST" }); state.scripts = await request(`/projects/${state.project.id}/scripts`); state.project.status = "ASSET_REVIEW"; render(); toast("剧本已确认，可以开始整理视觉资产");
+}
+
+async function generateShots() {
+  const approved = state.scripts.find(s => s.is_approved); if (!approved) return toast("请先确认剧本", "error");
+  loading(true, "AI 正在设计分镜", "正在分析场次、动作、景别与镜头连续性");
+  state.scenes = await request(`/scripts/${approved.id}/shots/generate`, { method: "POST" }); loading(false); state.project.status = "SHOT_LIST_REVIEW"; render(); toast("分镜拆分完成");
+}
+
+async function extractProjectAssets() {
+  loading(true, "AI 正在分析视觉资产", "正在识别人物、场景和关键道具");
+  state.assets = await request(`/projects/${state.project.id}/assets/extract`, { method: "POST" });
+  loading(false);
+  renderAssets();
+  toast(`已整理 ${state.assets.length} 个视觉资产`);
+}
+
+async function generateAssetPrompt(assetId) {
+  const current = state.assets.find(asset => asset.id === assetId);
+  loading(true, `正在生成 @${current?.name || "资产"} 的提示词`, "将结合项目地域、时代和视觉风格");
+  const asset = await request(`/assets/${assetId}/prompt/generate`, { method: "POST" });
+  state.assets = state.assets.map(item => item.id === asset.id ? asset : item);
+  loading(false);
+  renderAssets();
+  toast(`@${asset.name} 的资产提示词已生成`);
+}
+
+async function generateAllAssetPrompts() {
+  if (!state.assets.length) return toast("请先创建或提取资产", "error");
+  const failed = [];
+  loading(true, `正在生成资产提示词 0/${state.assets.length}`, "将按资产顺序逐一生成，请稍候");
+  for (let index = 0; index < state.assets.length; index += 1) {
+    const current = state.assets[index];
+    $("#loading-title").textContent = `正在生成资产提示词 ${index + 1}/${state.assets.length}`;
+    $("#loading-copy").textContent = `当前资产：@${current.name}`;
+    try {
+      const asset = await request(`/assets/${current.id}/prompt/generate`, { method: "POST" });
+      state.assets = state.assets.map(item => item.id === asset.id ? asset : item);
+    } catch (error) {
+      failed.push(`@${current.name}: ${error.message}`);
+    }
+  }
+  loading(false);
+  renderAssets();
+  if (failed.length) {
+    toast(`已完成 ${state.assets.length - failed.length}/${state.assets.length} 个资产，${failed.length} 个失败`, "error");
+  } else {
+    toast(`全部 ${state.assets.length} 个资产提示词已生成`);
+  }
+}
+
+async function generatePrompt(shotId) {
+  loading(true, "AI 正在设计提示词", "正在组合角色、构图、光线与视觉风格");
+  await request(`/shots/${shotId}/prompts/generate`, { method: "POST" }); state.prompts.set(shotId, await request(`/shots/${shotId}/prompts`)); loading(false); renderPrompts(); toast("提示词已生成");
+}
+
+async function generateAllPrompts() {
+  const shots = state.scenes.flatMap(scene => scene.shots);
+  if (!shots.length) return toast("请先生成分镜", "error");
+
+  const failed = [];
+  loading(true, `正在生成提示词 0/${shots.length}`, "将按镜头顺序逐一生成，请稍候");
+  for (let index = 0; index < shots.length; index += 1) {
+    const shot = shots[index];
+    $("#loading-title").textContent = `正在生成提示词 ${index + 1}/${shots.length}`;
+    try {
+      const prompt = await request(`/shots/${shot.id}/prompts/generate`, { method: "POST" });
+      state.prompts.set(shot.id, [prompt, ...(state.prompts.get(shot.id) || [])]);
+    } catch (error) {
+      failed.push(`镜头 ${shot.sequence}: ${error.message}`);
+    }
+  }
+  loading(false);
+  renderPrompts();
+  if (failed.length) {
+    toast(`已完成 ${shots.length - failed.length}/${shots.length} 个镜头，${failed.length} 个失败`, "error");
+  } else {
+    toast(`全部 ${shots.length} 个镜头的提示词已生成`);
+  }
+}
+
+$("#content").addEventListener("input", event => { if (event.target.id === "script-content") $("#script-stats").textContent = `${event.target.value.length} 字`; });
+loadProjects().catch(error => { toast(`无法连接后端：${error.message}`, "error"); render(); });
