@@ -42,6 +42,7 @@ button { color: inherit; }
 .topbar { height: 104px; padding: 25px 42px; border-bottom: 1px solid #292c31; display: flex; align-items: center; justify-content: space-between; }
 .project-title-wrap h1 { font-family: "Noto Serif SC", serif; font-size: 23px; margin: 5px 0 0; }
 .topbar-meta { display: flex; gap: 9px; }
+.topbar-actions { display: flex; align-items: center; gap: 14px; }.monitor-button { border: 1px solid #4b5159; border-radius: 4px; padding: 9px 13px; background: #171a1f; color: var(--paper); cursor: pointer; font-size: 11px; }.monitor-button:hover { border-color: var(--accent); color: white; }.monitor-button:disabled { opacity: .35; cursor: not-allowed; }
 .meta-chip { border: 1px solid #34373d; color: #aaaeb5; border-radius: 99px; padding: 6px 10px; font: 11px "DM Mono", monospace; }
 .workflow { height: 96px; padding: 0 42px; border-bottom: 1px solid #292c31; display: flex; align-items: center; }
 .workflow-step { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border: 0; background: transparent; opacity: .42; text-align: left; cursor: pointer; }

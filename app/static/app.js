@@ -5,7 +5,7 @@ const state = {
   prompts: new Map(), step: "project", scriptMode: "manual",
   assetSelectionMode: false, selectedAssetIds: new Set(),
   imageProviders: [], assetImages: new Map(), imagePollTimer: null,
-  metrics: null,
+  metrics: null, returnStep: "project",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -49,8 +49,9 @@ function loading(show, title = "AI 正在工作", copy = "这可能需要一点�
 }
 
 async function setStep(step) {
+  if (step === "metrics" && state.step !== "metrics") state.returnStep = state.step;
   state.step = step;
-  const order = ["project", "script", "assets", "shots", "prompts", "metrics"];
+  const order = ["project", "script", "assets", "shots", "prompts"];
   const current = order.indexOf(step);
   $$(".workflow-step").forEach((node, index) => {
     node.classList.toggle("active", index === current);
@@ -87,6 +88,7 @@ function renderSidebar() {
 function renderHeader() {
   $("#current-project-title").textContent = state.project?.name || "选择一个项目";
   $("#project-meta").innerHTML = state.project ? `<span class="meta-chip">${esc(state.project.aspect_ratio)}</span><span class="meta-chip">${esc(state.project.language)}</span><span class="meta-chip">${esc(statusLabels[state.project.status] || state.project.status)}</span>` : "";
+  $("[data-action='open-metrics']").disabled = !state.project;
 }
 
 function renderWorkflow() {
@@ -97,7 +99,6 @@ function renderWorkflow() {
     assets: approvedScript,
     shots: approvedScript,
     prompts: state.scenes.length > 0,
-    metrics: Boolean(state.project),
   };
   $$(".workflow-step").forEach(node => {
     node.disabled = !availability[node.dataset.step];
@@ -106,7 +107,6 @@ function renderWorkflow() {
       assets: "请先确认一个剧本版本",
       shots: "请先确认一个剧本版本",
       prompts: "请先生成分镜",
-      metrics: "请先创建或选择项目",
     }[node.dataset.step] : "";
   });
 }
@@ -125,9 +125,9 @@ function renderMetrics() {
     return;
   }
   const statusLabel = { passed: "通过", validation_failed: "校验失败", request_failed: "请求失败" };
-  const operationLabel = { script_generation: "剧本生成", asset_extraction: "资产提取", asset_prompt_generation: "资产提示词", storyboard_generation: "分镜生成", shot_prompt_generation: "镜头提示词" };
+  const operationLabel = { script_generation: "剧本生成", asset_extraction: "资产提取", asset_prompt_generation: "资产提示词", storyboard_generation: "分镜生成", shot_prompt_generation: "镜头提示词", image_generation: "图片生成" };
   $("#content").innerHTML = `
-    <div class="section-head"><div><span class="eyebrow">AGENT OBSERVATORY</span><h2>Agent 评估</h2><p>当前第一阶段统计分镜生成的确定性校验与重复生成行为。</p></div><button class="button" data-action="refresh-metrics">刷新指标</button></div>
+    <div class="section-head"><div><span class="eyebrow">AGENT OBSERVATORY</span><h2>运行监控与 Agent 评估</h2><p>独立监控 DeepSeek、OpenAI、Seedream 等外部模型接口的调用与质量结果。</p></div><div class="actions"><button class="button" data-action="close-metrics">← 返回制作</button><button class="button primary" data-action="refresh-metrics">刷新指标</button></div></div>
     <div class="metrics-grid">
       <article class="panel metric-card"><span>总生成次数</span><strong>${metrics.total_runs}</strong><small>包含成功与失败运行</small></article>
       <article class="panel metric-card"><span>总体通过率</span><strong>${metrics.pass_rate}%</strong><small>${metrics.passed_runs} 通过 / ${metrics.failed_runs} 失败</small></article>
@@ -418,6 +418,8 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "generate-script") await generateScript();
     else if (actionButton?.dataset.action === "approve-script") await approveScript();
     else if (actionButton?.dataset.action === "generate-shots") await generateShots();
+    else if (actionButton?.dataset.action === "open-metrics") await setStep("metrics");
+    else if (actionButton?.dataset.action === "close-metrics") await setStep(state.returnStep || "project");
     else if (actionButton?.dataset.action === "refresh-metrics") await setStep("metrics");
     else if (actionButton?.dataset.action === "generate-all-prompts") await generateAllPrompts();
     else if (event.target.closest("[data-generate-prompt]")) await generatePrompt(event.target.closest("[data-generate-prompt]").dataset.generatePrompt);

@@ -9,8 +9,8 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260702-1" in response.text
-    assert "/static/styles.css?v=20260702-1" in response.text
+    assert "/static/app.js?v=20260702-2" in response.text
+    assert "/static/styles.css?v=20260702-2" in response.text
     assert "data-close-dialog" in response.text
 
     static_response = client.get("/static/styles.css")
@@ -26,8 +26,10 @@ def test_frontend_entrypoint(client):
     assert "delete-selected-assets" in app_response.text
     assert "select-all-assets" in app_response.text
     assert "data-delete-shot" in app_response.text
-    assert "Agent 评估" in response.text
     assert "renderMetrics" in app_response.text
+    assert 'data-action="open-metrics"' in response.text
+    assert 'data-step="metrics"' not in response.text
+    assert "运行监控与 Agent 评估" in app_response.text
 
 
 def test_project_and_script_workflow(client):

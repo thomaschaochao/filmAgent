@@ -84,7 +84,7 @@ GET /api/v1/projects/{project_id}/agent-metrics
 
 ### 3.5 Agent 评估窗口
 
-前端工作流新增第六个页面“Agent 评估”，展示：
+评估页已从制作工作流中移出，通过顶栏独立的“运行监控”按钮进入，展示：
 
 - 总生成次数。
 - 总体通过率。
@@ -92,6 +92,7 @@ GET /api/v1/projects/{project_id}/agent-metrics
 - 校验失败和请求失败次数。
 - 各项校验通过率进度条。
 - 最近运行状态与失败原因。
+- DeepSeek、OpenAI 与 Seedream 的操作类型、供应商、模型、耗时和 token。
 
 ### 3.6 测试状态
 
@@ -103,8 +104,8 @@ GET /api/v1/projects/{project_id}/agent-metrics
 - 第二次生成被统计为重复生成。
 - 评估窗口静态资源存在。
 
-最近验证结果：24 项测试通过，Ruff 检查通过。P0 新增覆盖 Schema 修复重试、
-裸文本拒绝、五类操作运行记录以及分镜快照恢复。
+最近验证结果：24 项测试通过，Ruff 与前端语法检查通过。覆盖 Schema 修复重试、
+裸文本拒绝、五类 DeepSeek 操作、图片供应商调用记录以及分镜快照恢复。
 
 ### 3.7 P0 可靠性与可观测性（已完成）
 
@@ -117,6 +118,7 @@ GET /api/v1/projects/{project_id}/agent-metrics
 - 校验阈值、规则版本、文本最小长度和 DeepSeek 输出 token 上限已经配置化。
 - 新增 `storyboard_snapshots`，每次通过校验的分镜保存版本，并提供列表和恢复 API。
 - 写入失败路径执行回滚；校验失败不会覆盖已有业务数据。
+- OpenAI / Seedream 图片生成成功与失败也写入 `agent_runs`，纳入统一监控与通过率。
 
 ## 4. 当前指标口径
 
@@ -133,7 +135,7 @@ GET /api/v1/projects/{project_id}/agent-metrics
 1. 五类调用都有基础校验，但剧本和资产提示词仍是文本启发式，不是结构化内容评分。
 2. 剧本引用匹配仍是字符串启发式，改写、同义表达可能被误判。
 3. 重复镜头只检查完全相同指纹，不能识别语义重复。
-4. token 依赖供应商返回 usage；尚未计算费用，也未在评估窗口聚合展示成本和延迟。
+4. token 依赖供应商返回 usage；尚未计算费用，图片供应商当前也不返回 token。
 5. 没有记录用户是否采用、编辑或撤销结果，因此无法计算真实接受率。
 6. 评估窗口没有时间范围、模型版本、操作类型筛选和趋势图。
 7. `agent_runs` 和分镜快照没有数据保留和归档策略。
@@ -171,4 +173,4 @@ GET /api/v1/projects/{project_id}/agent-metrics
 
 ## 7. 下一位 Agent 的推荐起点
 
-进入 P1：先把校验结果分成 hard failure、warning 和 info，再为剧本、资产和提示词增加可解释的业务校验项。随后把统一运行记录从路由层收敛为独立服务，并在评估窗口增加 operation/model 筛选、token 与延迟聚合。
+进入 P1：先把校验结果分成 hard failure、warning 和 info，再为剧本、资产和提示词增加可解释的业务校验项。随后把统一运行记录从路由层收敛为独立服务，并在独立监控页增加 operation/model 筛选和时间趋势。

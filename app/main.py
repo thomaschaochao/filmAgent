@@ -1,4 +1,5 @@
 import re
+import time
 import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -271,6 +272,36 @@ def _run_asset_image_generation(image_id: str, bind) -> None:
         image = db.get(AssetImage, image_id)
         if image is None:
             return
+        started = time.perf_counter()
+        project_id = image.asset.project_id
+        previous = db.scalar(
+            select(func.count(AgentRun.id)).where(
+                AgentRun.operation == "image_generation",
+                AgentRun.target_id == image.asset_id,
+            )
+        )
+
+        def record_run(status_value: str, *, model: str | None, error: str | None = None) -> None:
+            db.add(
+                AgentRun(
+                    project_id=project_id,
+                    operation="image_generation",
+                    target_type="asset",
+                    target_id=image.asset_id,
+                    status=status_value,
+                    validation_passed=True if status_value == "passed" else None,
+                    is_regeneration=bool(previous),
+                    error_message=error,
+                    error_type="image_api_error" if error else None,
+                    provider=image.provider or "unknown",
+                    model=model,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                    attempt_count=1,
+                    prompt_version="image-generation-v1",
+                    rules_version=get_settings().validation_rules_version,
+                )
+            )
+
         image.status = "generating"
         db.commit()
         try:
@@ -294,14 +325,17 @@ def _run_asset_image_generation(image_id: str, bind) -> None:
                 )
                 image.is_primary = True
                 image.asset.image_path = image.image_path
+            record_run("passed", model=model)
             db.commit()
         except (ImageGenerationError, RuntimeError) as exc:
             image.status = "failed"
             image.error_message = str(exc)
+            record_run("request_failed", model=image.model, error=str(exc))
             db.commit()
         except Exception:
             image.status = "failed"
             image.error_message = "图片生成发生未知错误，请稍后重试。"
+            record_run("request_failed", model=image.model, error="图片生成发生未知错误")
             db.commit()
 
 
