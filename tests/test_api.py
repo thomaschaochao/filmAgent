@@ -9,8 +9,8 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260701-8" in response.text
-    assert "/static/styles.css?v=20260701-2" in response.text
+    assert "/static/app.js?v=20260702-1" in response.text
+    assert "/static/styles.css?v=20260702-1" in response.text
     assert "data-close-dialog" in response.text
 
     static_response = client.get("/static/styles.css")
@@ -23,6 +23,11 @@ def test_frontend_entrypoint(client):
     assert "generate-all-asset-prompts" in app_response.text
     assert "data-preview-asset-prompt" in app_response.text
     assert "formatPromptPreview" in app_response.text
+    assert "delete-selected-assets" in app_response.text
+    assert "select-all-assets" in app_response.text
+    assert "data-delete-shot" in app_response.text
+    assert "Agent 评估" in response.text
+    assert "renderMetrics" in app_response.text
 
 
 def test_project_and_script_workflow(client):
@@ -109,7 +114,7 @@ def test_asset_crud_and_reference_image_upload(client):
         headers={"content-type": "image/png"},
     )
     assert upload_response.status_code == 200
-    assert upload_response.json()["image_url"].startswith("/storage/assets/")
+    assert upload_response.json()["image_url"].startswith("/storage/projects/")
 
     list_response = client.get(f"/api/v1/projects/{project['id']}/assets")
     assert list_response.status_code == 200
@@ -117,3 +122,137 @@ def test_asset_crud_and_reference_image_upload(client):
 
     delete_response = client.delete(f"/api/v1/assets/{asset['id']}")
     assert delete_response.status_code == 204
+
+
+def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
+    from app.schemas import PromptDraft, SceneDraft, ShotDraft, StoryboardDraft
+
+    project = client.post("/api/v1/projects", json={"name": "Shot Test"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "Test", "content": "Two shots"},
+    ).json()
+    client.post(f"/api/v1/scripts/{script['id']}/approve")
+
+    storyboard = StoryboardDraft(
+        scenes=[
+            SceneDraft(
+                sequence=1,
+                heading="Scene 1",
+                shots=[
+                    ShotDraft(
+                        sequence=1,
+                        script_reference="Two shots",
+                        subject="A",
+                        action="walks",
+                        environment="station",
+                        shot_size="wide",
+                        camera_angle="eye level",
+                        camera_motion="static",
+                    ),
+                    ShotDraft(
+                        sequence=2,
+                        script_reference="Two shots",
+                        subject="B",
+                        action="waits",
+                        environment="station",
+                        shot_size="medium",
+                        camera_angle="eye level",
+                        camera_motion="static",
+                    ),
+                    ShotDraft(
+                        sequence=3,
+                        script_reference="Two shots",
+                        subject="C",
+                        action="looks up",
+                        environment="station",
+                        shot_size="close-up",
+                        camera_angle="low angle",
+                        camera_motion="static",
+                    ),
+                    ShotDraft(
+                        sequence=4,
+                        script_reference="Two shots",
+                        subject="D",
+                        action="leaves",
+                        environment="station",
+                        shot_size="wide",
+                        camera_angle="eye level",
+                        camera_motion="pan",
+                    ),
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.generate_storyboard", lambda *args: storyboard)
+    scenes = client.post(f"/api/v1/scripts/{script['id']}/shots/generate").json()
+
+    monkeypatch.setattr(
+        "app.main.generate_prompt",
+        lambda *args: PromptDraft(positive_prompt="existing prompt"),
+    )
+    prompt_response = client.post(
+        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate"
+    )
+    assert prompt_response.status_code == 200
+
+    delete_response = client.delete(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}")
+    assert delete_response.status_code == 204
+    remaining = client.get(f"/api/v1/projects/{project['id']}/scenes").json()
+    assert len(remaining[0]["shots"]) == 3
+    assert [shot["sequence"] for shot in remaining[0]["shots"]] == [1, 2, 3]
+
+    second_generation = client.post(f"/api/v1/scripts/{script['id']}/shots/generate")
+    assert second_generation.status_code == 200
+    metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
+    assert metrics["total_runs"] == 2
+    assert metrics["passed_runs"] == 2
+    assert metrics["regeneration_count"] == 1
+    assert metrics["pass_rate"] == 100.0
+
+
+def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
+    from app.schemas import SceneDraft, ShotDraft, StoryboardDraft
+
+    project = client.post("/api/v1/projects", json={"name": "Validation Test"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "Test", "content": "女孩走进车站。"},
+    ).json()
+    client.post(f"/api/v1/scripts/{script['id']}/approve")
+    invalid = StoryboardDraft(
+        scenes=[
+            SceneDraft(
+                sequence=2,
+                heading="Wrong sequence",
+                shots=[
+                    ShotDraft(
+                        sequence=1,
+                        script_reference="不存在的台词",
+                        subject="女孩",
+                        action="走路",
+                        environment="车站",
+                        shot_size="wide",
+                        camera_angle="eye level",
+                        camera_motion="static",
+                    )
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.generate_storyboard", lambda *args: invalid)
+
+    response = client.post(f"/api/v1/scripts/{script['id']}/shots/generate")
+    assert response.status_code == 422
+    assert "场次连续编号" in response.json()["detail"]
+    assert client.get(f"/api/v1/projects/{project['id']}/scenes").json() == []
+
+    metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
+    assert metrics["total_runs"] == 1
+    assert metrics["validation_failed_count"] == 1
+    assert metrics["pass_rate"] == 0.0
+    failed_keys = {
+        item["key"] for item in metrics["recent_runs"][0]["validation_results"]
+        if not item["passed"]
+    }
+    assert {"scene_sequence", "script_reference_match"} <= failed_keys

@@ -1,10 +1,113 @@
 import json
+import re
+import unicodedata
 
 from pydantic import ValidationError
 
 from app.models import Asset, Project, Shot
 from app.schemas import AssetExtractionDraft, PromptDraft, StoryboardDraft
 from app.services.deepseek import DeepSeekClient, DeepSeekError
+
+
+def _comparable_text(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[^\w\u3400-\u9fff]+", "", value)
+
+
+def validate_storyboard(draft: StoryboardDraft, script: str) -> list[dict]:
+    """Run deterministic checks before generated storyboard data is persisted."""
+    checks: list[dict] = []
+    expected_scenes = list(range(1, len(draft.scenes) + 1))
+    actual_scenes = [scene.sequence for scene in draft.scenes]
+    checks.append(
+        {
+            "key": "scene_sequence",
+            "label": "场次连续编号",
+            "passed": actual_scenes == expected_scenes,
+            "value": int(actual_scenes == expected_scenes),
+            "threshold": 1,
+            "detail": f"实际编号 {actual_scenes}，期望 {expected_scenes}",
+        }
+    )
+
+    invalid_shot_scenes: list[int] = []
+    shots = []
+    for scene in draft.scenes:
+        shots.extend(scene.shots)
+        actual = [shot.sequence for shot in scene.shots]
+        if actual != list(range(1, len(scene.shots) + 1)):
+            invalid_shot_scenes.append(scene.sequence)
+    checks.append(
+        {
+            "key": "shot_sequence",
+            "label": "镜头连续编号",
+            "passed": not invalid_shot_scenes,
+            "value": len(draft.scenes) - len(invalid_shot_scenes),
+            "threshold": len(draft.scenes),
+            "detail": "全部场次镜头编号连续"
+            if not invalid_shot_scenes
+            else f"异常场次：{invalid_shot_scenes}",
+        }
+    )
+
+    referenced = [shot for shot in shots if shot.script_reference.strip()]
+    coverage = len(referenced) / len(shots) if shots else 0.0
+    checks.append(
+        {
+            "key": "script_reference_coverage",
+            "label": "剧本引用覆盖率",
+            "passed": coverage >= 0.8,
+            "value": round(coverage, 4),
+            "threshold": 0.8,
+            "detail": f"{len(referenced)}/{len(shots)} 个镜头含剧本引用",
+        }
+    )
+
+    normalized_script = _comparable_text(script)
+    matched = sum(
+        1
+        for shot in referenced
+        if _comparable_text(shot.script_reference)
+        and _comparable_text(shot.script_reference) in normalized_script
+    )
+    match_rate = matched / len(referenced) if referenced else 0.0
+    checks.append(
+        {
+            "key": "script_reference_match",
+            "label": "剧本引用匹配率",
+            "passed": match_rate >= 0.7,
+            "value": round(match_rate, 4),
+            "threshold": 0.7,
+            "detail": f"{matched}/{len(referenced)} 条引用可在原剧本中找到",
+        }
+    )
+
+    seen: set[tuple[str, ...]] = set()
+    duplicate_count = 0
+    for shot in shots:
+        fingerprint = tuple(
+            _comparable_text(value)
+            for value in (
+                shot.script_reference,
+                shot.subject,
+                shot.action,
+                shot.environment,
+            )
+        )
+        if fingerprint in seen:
+            duplicate_count += 1
+        seen.add(fingerprint)
+    checks.append(
+        {
+            "key": "duplicate_shots",
+            "label": "重复镜头检查",
+            "passed": duplicate_count == 0,
+            "value": duplicate_count,
+            "threshold": 0,
+            "detail": f"发现 {duplicate_count} 个完全重复镜头",
+        }
+    )
+    return checks
 
 
 def generate_script(
@@ -74,7 +177,8 @@ def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset
     layout_requirements = {
         "character": (
             "角色设定三视图，使用同一角色、同一服装、同一比例，完整展示正面、标准侧面和背面，"
-            "纯净中性背景，三幅视图等距排列，不使用透视夸张"
+            "纯白无缝背景或无背景，不得出现环境、场景、家具、建筑或装饰元素，"
+            "三幅视图等距排列，不使用透视夸张"
         ),
         "location": (
             "场景设定九宫格，3×3 等尺寸分镜板，在同一场景设定和时间条件下展示九个不同机位与角度，"
@@ -93,6 +197,8 @@ def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset
     system = (
         "你是影视视觉资产概念设计师。为单个资产编写可用于图片生成的固定设定提示词。"
         "只描述资产本身的稳定外观、材质、时代地域特征和辨识特征，不描述具体镜头动作，"
+        "必须明确继承 visual_style，不得省略写实、动画、水墨等项目风格。"
+        "人物资产必须是纯白或无背景的角色设定图，禁止添加任何环境和场景；"
         "必须严格遵守指定的版式与视角要求，不要输出解释或 Markdown。"
     )
     user = json.dumps(
@@ -103,6 +209,11 @@ def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset
             "description": asset.description,
             "world_setting": project.world_setting,
             "visual_style": project.visual_style,
+            "background_requirement": (
+                "纯白无缝背景或无背景，禁止环境和场景元素"
+                if asset.asset_type == "character"
+                else "按资产类型和版式要求处理"
+            ),
             "required_layout": layout_requirement,
         },
         ensure_ascii=False,

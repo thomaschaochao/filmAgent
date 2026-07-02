@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260701-2">
+  <link rel="stylesheet" href="/static/styles.css?v=20260702-1">
 </head>
 <body>
   <div class="app-shell">
@@ -48,6 +48,8 @@
         <button class="workflow-step" data-step="shots" type="button"><span>04</span><div><strong>分镜设计</strong><small>镜头与场次</small></div></button>
         <i></i>
         <button class="workflow-step" data-step="prompts" type="button"><span>05</span><div><strong>提示词</strong><small>生成与管理</small></div></button>
+        <i></i>
+        <button class="workflow-step" data-step="metrics" type="button"><span>06</span><div><strong>Agent 评估</strong><small>质量与运行指标</small></div></button>
       </section>
 
       <div class="content" id="content" aria-live="polite"></div>
@@ -87,8 +89,22 @@
       <div class="dialog-actions"><button class="button ghost" type="button" data-close-dialog>关闭</button><button class="button primary" id="copy-previewed-asset-prompt" type="button">复制完整提示词</button></div>
     </div>
   </dialog>
+  <dialog id="asset-images-dialog" class="dialog wide">
+    <div class="asset-images-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">ASSET IMAGE STUDIO</span><h2 id="asset-images-title">资产图片</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></div>
+      <form id="asset-image-generate-form">
+        <div class="image-generate-row">
+          <label>图片模型<select name="provider" id="asset-image-provider"></select></label>
+          <div><span class="image-defaults">1 张 · 高质量 · 横向画布</span><button class="button primary" id="generate-asset-image-button" type="submit">生成图片</button></div>
+        </div>
+        <p class="provider-hint" id="asset-image-provider-hint"></p>
+      </form>
+      <div class="asset-image-gallery" id="asset-image-gallery"></div>
+      <div class="dialog-actions"><button class="button ghost" type="button" data-close-dialog>关闭</button></div>
+    </div>
+  </dialog>
   <div class="loading-layer" id="loading-layer" hidden><div class="loader"><div class="aperture"></div><strong id="loading-title">AI 正在工作</strong><span id="loading-copy">这可能需要一点时间，请不要关闭页面</span></div></div>
   <div class="toast-region" id="toast-region" aria-live="assertive"></div>
-  <script src="/static/app.js?v=20260701-8" defer></script>
+  <script src="/static/app.js?v=20260702-1" defer></script>
 </body>
 </html>

@@ -1,5 +1,11 @@
 from app.models import Asset, Project, Shot
-from app.services.workflow import generate_asset_prompt, generate_prompt, generate_script
+from app.schemas import SceneDraft, ShotDraft, StoryboardDraft
+from app.services.workflow import (
+    generate_asset_prompt,
+    generate_prompt,
+    generate_script,
+    validate_storyboard,
+)
 
 
 class RecordingClient:
@@ -99,3 +105,53 @@ def test_asset_prompts_enforce_type_specific_layouts():
         assert all(term in client.user_prompt for term in required_terms)
         assert "cinematic neo-noir" in prompt
         assert "1980s United States" in prompt
+
+
+def test_character_prompt_uses_blank_background_and_keeps_realistic_style():
+    client = RecordingClient()
+    project = Project(
+        name="Realistic Film",
+        visual_style="电影级写实风格",
+        world_setting="现代美国",
+    )
+    asset = Asset(asset_type="character", name="飞行员", description="中年民航飞行员")
+
+    prompt = generate_asset_prompt(client, project, asset)
+
+    assert "纯白无缝背景或无背景" in prompt
+    assert "不得出现环境、场景" in prompt
+    assert "电影级写实风格" in prompt
+    assert "纯白无缝背景或无背景" in client.user_prompt
+    assert "电影级写实风格" in client.user_prompt
+
+
+def test_storyboard_validation_reports_sequences_coverage_matches_and_duplicates():
+    duplicate = ShotDraft(
+        sequence=1,
+        script_reference="女孩走进车站",
+        subject="女孩",
+        action="走进车站",
+        environment="车站",
+        shot_size="wide",
+        camera_angle="eye level",
+        camera_motion="static",
+    )
+    storyboard = StoryboardDraft(
+        scenes=[
+            SceneDraft(
+                sequence=1,
+                heading="车站",
+                shots=[duplicate, duplicate.model_copy(update={"sequence": 2})],
+            )
+        ]
+    )
+    checks = {
+        check["key"]: check
+        for check in validate_storyboard(storyboard, "夜。女孩走进车站。")
+    }
+    assert checks["scene_sequence"]["passed"] is True
+    assert checks["shot_sequence"]["passed"] is True
+    assert checks["script_reference_coverage"]["passed"] is True
+    assert checks["script_reference_match"]["passed"] is True
+    assert checks["duplicate_shots"]["passed"] is False
+    assert checks["duplicate_shots"]["value"] == 1

@@ -60,6 +60,38 @@ class AssetRead(AssetCreate, ORMModel):
     updated_at: datetime
 
 
+ImageProvider = Literal["openai", "seedream"]
+
+
+class ImageProviderRead(BaseModel):
+    id: ImageProvider
+    name: str
+    model: str
+    configured: bool
+
+
+class AssetImageGenerateRequest(BaseModel):
+    provider: ImageProvider
+
+
+class AssetImageRead(ORMModel):
+    id: str
+    asset_id: str
+    source: str
+    provider: str | None
+    model: str | None
+    prompt_snapshot: str
+    size: str
+    quality: str
+    status: str
+    error_message: str | None
+    image_url: str | None
+    local_path: str | None
+    is_primary: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class AssetDraft(BaseModel):
     asset_type: AssetType
     name: str = Field(min_length=1, max_length=200)
@@ -173,3 +205,45 @@ class PromptRead(ORMModel):
     model_target: str
     prompt_metadata: dict
     created_at: datetime
+
+
+class ValidationCheckRead(BaseModel):
+    key: str
+    label: str
+    passed: bool
+    value: float | int
+    threshold: float | int | None = None
+    detail: str
+
+
+class AgentRunRead(ORMModel):
+    id: str
+    operation: str
+    target_type: str
+    target_id: str | None
+    status: str
+    validation_passed: bool | None
+    validation_results: list[ValidationCheckRead]
+    is_regeneration: bool
+    error_message: str | None
+    created_at: datetime
+
+
+class ValidationMetricRead(BaseModel):
+    key: str
+    label: str
+    total: int
+    passed: int
+    pass_rate: float
+
+
+class AgentMetricsRead(BaseModel):
+    total_runs: int
+    passed_runs: int
+    failed_runs: int
+    pass_rate: float
+    regeneration_count: int
+    validation_failed_count: int
+    request_failed_count: int
+    validations: list[ValidationMetricRead]
+    recent_runs: list[AgentRunRead]

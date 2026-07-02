@@ -3,6 +3,9 @@ const API = "/api/v1";
 const state = {
   projects: [], project: null, scripts: [], script: null, assets: [], scenes: [],
   prompts: new Map(), step: "project", scriptMode: "manual",
+  assetSelectionMode: false, selectedAssetIds: new Set(),
+  imageProviders: [], assetImages: new Map(), imagePollTimer: null,
+  metrics: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -47,7 +50,7 @@ function loading(show, title = "AI 正在工作", copy = "这可能需要一点�
 
 async function setStep(step) {
   state.step = step;
-  const order = ["project", "script", "assets", "shots", "prompts"];
+  const order = ["project", "script", "assets", "shots", "prompts", "metrics"];
   const current = order.indexOf(step);
   $$(".workflow-step").forEach((node, index) => {
     node.classList.toggle("active", index === current);
@@ -61,6 +64,13 @@ async function setStep(step) {
       toast(error.message, "error");
     } finally {
       loading(false);
+    }
+  }
+  if (step === "metrics" && state.project) {
+    try {
+      state.metrics = await request(`/projects/${state.project.id}/agent-metrics`);
+    } catch (error) {
+      toast(error.message, "error");
     }
   }
   render();
@@ -87,6 +97,7 @@ function renderWorkflow() {
     assets: approvedScript,
     shots: approvedScript,
     prompts: state.scenes.length > 0,
+    metrics: Boolean(state.project),
   };
   $$(".workflow-step").forEach(node => {
     node.disabled = !availability[node.dataset.step];
@@ -95,14 +106,38 @@ function renderWorkflow() {
       assets: "请先确认一个剧本版本",
       shots: "请先确认一个剧本版本",
       prompts: "请先生成分镜",
+      metrics: "请先创建或选择项目",
     }[node.dataset.step] : "";
   });
 }
 
 function render() {
   renderSidebar(); renderHeader(); renderWorkflow();
-  const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts };
+  const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts, metrics: renderMetrics };
   views[state.step]();
+}
+
+function renderMetrics() {
+  if (!state.project) return renderProject();
+  const metrics = state.metrics;
+  if (!metrics) {
+    $("#content").innerHTML = `<div class="empty-state"><div><h2>正在读取 Agent 指标</h2></div></div>`;
+    return;
+  }
+  const statusLabel = { passed: "通过", validation_failed: "校验失败", request_failed: "请求失败" };
+  $("#content").innerHTML = `
+    <div class="section-head"><div><span class="eyebrow">AGENT OBSERVATORY</span><h2>Agent 评估</h2><p>当前第一阶段统计分镜生成的确定性校验与重复生成行为。</p></div><button class="button" data-action="refresh-metrics">刷新指标</button></div>
+    <div class="metrics-grid">
+      <article class="panel metric-card"><span>总生成次数</span><strong>${metrics.total_runs}</strong><small>包含成功与失败运行</small></article>
+      <article class="panel metric-card"><span>总体通过率</span><strong>${metrics.pass_rate}%</strong><small>${metrics.passed_runs} 通过 / ${metrics.failed_runs} 失败</small></article>
+      <article class="panel metric-card"><span>重复生成次数</span><strong>${metrics.regeneration_count}</strong><small>同一剧本首次生成之后的运行</small></article>
+      <article class="panel metric-card"><span>校验失败</span><strong>${metrics.validation_failed_count}</strong><small>DeepSeek 返回有效，但未达质量门槛</small></article>
+      <article class="panel metric-card"><span>请求失败</span><strong>${metrics.request_failed_count}</strong><small>网络、接口或结构解析失败</small></article>
+    </div>
+    <div class="metrics-layout">
+      <section class="panel metrics-panel"><div class="panel-heading"><h3>各项校验通过率</h3></div>${metrics.validations.length ? `<div class="validation-list">${metrics.validations.map(item => `<div class="validation-row"><div><strong>${esc(item.label)}</strong><small>${item.passed}/${item.total} 次通过</small></div><div class="metric-progress"><i style="width:${item.pass_rate}%"></i></div><b>${item.pass_rate}%</b></div>`).join("")}</div>` : `<p class="prompt-empty">生成一次分镜后，这里会出现编号、覆盖率、引用匹配和重复镜头指标。</p>`}</section>
+      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}"><div><strong>${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")}</small></div><span>${run.error_message ? esc(run.error_message) : "全部校验通过"}</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
+    </div>`;
 }
 
 function renderProject() {
@@ -135,13 +170,14 @@ function renderScript() {
 function renderAssets() {
   if (!state.project) return renderProject();
   const approved = state.scripts.some(script => script.is_approved);
+  const allAssetsSelected = state.assets.length > 0 && state.selectedAssetIds.size === state.assets.length;
   $("#content").innerHTML = `
-    <div class="section-head"><div><span class="eyebrow">VISUAL ASSET LIBRARY</span><h2>资产管理</h2><p>统一管理人物、场景和道具。镜头提示词会使用 @名称 引用对应资产。</p></div><div class="actions"><button class="button" data-action="new-asset">＋ 手动添加</button><button class="button" data-action="extract-assets" ${approved ? "" : "disabled"}>AI 从剧本提取</button>${state.assets.length ? `<button class="button primary" data-action="generate-all-asset-prompts">一键生成全部资产提示词</button>` : ""}<button class="button" data-step-next="shots">进入分镜设计 →</button></div></div>
+    <div class="section-head"><div><span class="eyebrow">VISUAL ASSET LIBRARY</span><h2>资产管理</h2><p>统一管理人物、场景和道具。镜头提示词会使用 @名称 引用对应资产。</p></div><div class="actions">${state.assetSelectionMode ? `<button class="button" data-action="select-all-assets">${allAssetsSelected ? "取消全选" : "全选"}</button><button class="button danger" data-action="delete-selected-assets" ${state.selectedAssetIds.size ? "" : "disabled"}>删除选中资产 (${state.selectedAssetIds.size})</button><button class="button" data-action="toggle-asset-selection">退出批量管理</button>` : `<button class="button" data-action="new-asset">＋ 手动添加</button><button class="button" data-action="extract-assets" ${approved ? "" : "disabled"}>AI 从剧本提取</button>${state.assets.length ? `<button class="button" data-action="toggle-asset-selection">批量管理</button><button class="button primary" data-action="generate-all-asset-prompts">一键生成全部资产提示词</button>` : ""}<button class="button" data-step-next="shots">进入分镜设计 →</button>`}</div></div>
     ${!approved ? `<div class="empty-state"><div><div class="empty-state-icon">03</div><h2>需要先确认剧本</h2><p>确认剧本后才能提取其中的人物、场景与关键道具。</p><button class="button primary" data-step-next="script">返回剧本</button></div></div>` : !state.assets.length ? `<div class="empty-state"><div><div class="empty-state-icon">@</div><h2>建立视觉资产库</h2><p>让 AI 从剧本提取资产，或手动添加一个人物、场景或道具。</p><div class="actions"><button class="button" data-action="new-asset">手动添加</button><button class="button primary" data-action="extract-assets">AI 从剧本提取</button></div></div></div>` : ["character", "location", "prop"].map(type => {
       const assets = state.assets.filter(asset => asset.asset_type === type);
       if (!assets.length) return "";
       return `<section class="asset-section"><header class="asset-section-head"><h3>${assetTypeLabels[type]}</h3><span>${assets.length} ASSETS</span></header><div class="asset-grid">${assets.map(asset => `
-        <article class="panel asset-card"><div class="asset-image">${asset.image_url ? `<img src="${esc(asset.image_url)}" alt="${esc(asset.name)}参考图">` : `<span>${type === "character" ? "人" : type === "location" ? "景" : "物"}</span>`}</div><div class="asset-content"><span class="asset-ref">@${esc(asset.name)}</span><h4>${esc(asset.name)}</h4><p>${esc(asset.description || "尚未填写视觉描述")}</p><div class="asset-prompt-preview">${esc(asset.prompt ? asset.prompt.slice(0, 110) : "尚未生成资产提示词")}${asset.prompt?.length > 110 ? "…" : ""}</div></div><div class="asset-actions"><button class="button" data-edit-asset="${asset.id}">编辑</button><button class="button" data-asset-prompt="${asset.id}">AI 生成提示词</button>${asset.prompt ? `<button class="button" data-preview-asset-prompt="${asset.id}">完整预览</button><button class="button" data-copy-asset-prompt="${asset.id}">复制提示词</button>` : ""}<label class="button upload-button">上传参考图<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-asset-upload="${asset.id}"></label></div></article>`).join("")}</div></section>`;
+        <article class="panel asset-card ${state.selectedAssetIds.has(asset.id) ? "selected" : ""}">${state.assetSelectionMode ? `<label class="asset-selector"><input type="checkbox" data-select-asset="${asset.id}" ${state.selectedAssetIds.has(asset.id) ? "checked" : ""}> 选择</label>` : ""}<div class="asset-image">${asset.image_url ? `<img src="${esc(asset.image_url)}" alt="${esc(asset.name)}参考图">` : `<span>${type === "character" ? "人" : type === "location" ? "景" : "物"}</span>`}</div><div class="asset-content"><span class="asset-ref">@${esc(asset.name)}</span><h4>${esc(asset.name)}</h4><p>${esc(asset.description || "尚未填写视觉描述")}</p><div class="asset-prompt-preview">${esc(asset.prompt ? asset.prompt.slice(0, 110) : "尚未生成资产提示词")}${asset.prompt?.length > 110 ? "…" : ""}</div></div>${state.assetSelectionMode ? "" : `<div class="asset-actions"><button class="button" data-edit-asset="${asset.id}">编辑</button><button class="button" data-asset-prompt="${asset.id}">AI 生成提示词</button>${asset.prompt ? `<button class="button primary" data-asset-images="${asset.id}">生成图片</button><button class="button" data-preview-asset-prompt="${asset.id}">完整预览</button><button class="button" data-copy-asset-prompt="${asset.id}">复制提示词</button>` : ""}${asset.image_url ? `<button class="button" data-asset-images="${asset.id}">候选图库</button>` : ""}<label class="button upload-button">上传参考图<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-asset-upload="${asset.id}"></label></div>`}</article>`).join("")}</div></section>`;
     }).join("")}`;
 }
 
@@ -180,7 +216,10 @@ async function selectProject(id) {
     request(`/projects/${id}/scenes`),
   ]);
   state.script = state.scripts[0] || null;
+  state.metrics = null;
   state.prompts.clear();
+  state.assetSelectionMode = false;
+  state.selectedAssetIds.clear();
   render();
 }
 
@@ -191,7 +230,7 @@ async function loadAllPrompts() {
 
 function openShotDialog(shot) {
   $("#shot-form").innerHTML = `<div class="dialog-head"><div><span class="eyebrow">SHOT EDITOR</span><h2>编辑镜头 ${String(shot.sequence).padStart(2,"0")}</h2></div><button class="icon-button" type="button" data-close-dialog>×</button></div><input type="hidden" name="id" value="${shot.id}"><div class="shot-form-grid">
-    <label>主体<input name="subject" value="${esc(shot.subject)}"></label><label>动作<input name="action" value="${esc(shot.action)}"></label><label class="span-2">环境<textarea name="environment" rows="2">${esc(shot.environment)}</textarea></label><label>景别<input name="shot_size" value="${esc(shot.shot_size)}"></label><label>机位角度<input name="camera_angle" value="${esc(shot.camera_angle)}"></label><label>镜头运动<input name="camera_motion" value="${esc(shot.camera_motion)}"></label><label>情绪<input name="emotion" value="${esc(shot.emotion)}"></label><label>光线<input name="lighting" value="${esc(shot.lighting)}"></label><label>对白<input name="dialogue" value="${esc(shot.dialogue)}"></label><label class="span-2">连续性要求<textarea name="continuity" rows="2">${esc(shot.continuity)}</textarea></label><label><input type="checkbox" name="is_locked" ${shot.is_locked ? "checked" : ""}> 锁定这个镜头</label></div><div class="dialog-actions"><button class="button ghost" type="button" data-close-dialog>取消</button><button class="button primary" type="submit" value="default">保存修改</button></div>`;
+    <label>主体<input name="subject" value="${esc(shot.subject)}"></label><label>动作<input name="action" value="${esc(shot.action)}"></label><label class="span-2">环境<textarea name="environment" rows="2">${esc(shot.environment)}</textarea></label><label>景别<input name="shot_size" value="${esc(shot.shot_size)}"></label><label>机位角度<input name="camera_angle" value="${esc(shot.camera_angle)}"></label><label>镜头运动<input name="camera_motion" value="${esc(shot.camera_motion)}"></label><label>情绪<input name="emotion" value="${esc(shot.emotion)}"></label><label>光线<input name="lighting" value="${esc(shot.lighting)}"></label><label>对白<input name="dialogue" value="${esc(shot.dialogue)}"></label><label class="span-2">连续性要求<textarea name="continuity" rows="2">${esc(shot.continuity)}</textarea></label><label><input type="checkbox" name="is_locked" ${shot.is_locked ? "checked" : ""}> 锁定这个镜头</label></div><div class="dialog-actions"><button class="button danger" type="button" data-delete-shot="${shot.id}">删除镜头</button><button class="button ghost" type="button" data-close-dialog>取消</button><button class="button primary" type="submit" value="default">保存修改</button></div>`;
   $("#shot-dialog").showModal();
 }
 
@@ -230,6 +269,69 @@ function openAssetPromptPreview(asset) {
   $("#asset-prompt-dialog").showModal();
 }
 
+function renderAssetImageStudio(assetId) {
+  const asset = state.assets.find(item => item.id === assetId);
+  const images = state.assetImages.get(assetId) || [];
+  $("#asset-images-title").textContent = `@${asset?.name || "资产"} · 图片候选`;
+  const providerSelect = $("#asset-image-provider");
+  providerSelect.innerHTML = state.imageProviders.map(provider => `
+    <option value="${provider.id}" ${provider.configured ? "" : "disabled"}>${esc(provider.name)}${provider.configured ? "" : "（未配置）"}</option>`).join("");
+  const firstConfigured = state.imageProviders.find(provider => provider.configured);
+  if (firstConfigured) providerSelect.value = firstConfigured.id;
+  $("#generate-asset-image-button").disabled = !firstConfigured || !asset?.prompt;
+  $("#asset-image-provider-hint").textContent = firstConfigured
+    ? `将使用当前资产的完整提示词。模型：${firstConfigured.model}`
+    : "请在项目根目录 config.local.env 中填写 OpenAI 或火山方舟 API Key，然后重启服务。";
+  $("#asset-image-gallery").innerHTML = images.length ? images.map(image => `
+    <article class="asset-image-candidate ${image.is_primary ? "primary" : ""}">
+      ${image.image_url ? `<a href="${esc(image.image_url)}" target="_blank" rel="noopener"><img src="${esc(image.image_url)}" alt="资产图片候选"></a>` : `<div class="asset-image-status ${image.status === "failed" ? "generation-error" : ""}">${image.status === "failed" ? esc(image.error_message || "生成失败") : image.status === "generating" ? "正在生成高质量图片…" : "等待生成…"}</div>`}
+      <div class="asset-image-meta"><strong>${image.source === "upload" ? "用户上传" : esc(image.provider === "openai" ? "GPT Image 2" : "Seedream")}</strong>${image.is_primary ? `<span class="primary-badge">● 主参考图</span>` : ""}<br>${esc(image.size)} · ${esc(image.quality)}${image.local_path ? `<div class="asset-local-path" title="${esc(image.local_path)}"><code>${esc(image.local_path)}</code><button class="button" data-copy-local-path="${image.id}">复制地址</button></div>` : ""}</div>
+      <div class="asset-actions">${image.status === "ready" && !image.is_primary ? `<button class="button" data-set-primary-image="${image.id}">设为主图</button>` : ""}${image.status === "failed" && image.provider ? `<button class="button" data-retry-image="${image.provider}">重试</button>` : ""}<button class="button danger" data-delete-asset-image="${image.id}">删除</button></div>
+    </article>`).join("") : `<div class="prompt-empty">还没有图片。选择模型后生成，或从资产卡上传参考图。</div>`;
+}
+
+async function openAssetImageStudio(assetId) {
+  const [providers, images] = await Promise.all([
+    state.imageProviders.length ? state.imageProviders : request("/image-providers"),
+    request(`/assets/${assetId}/images`),
+  ]);
+  state.imageProviders = providers;
+  state.assetImages.set(assetId, images);
+  $("#asset-images-dialog").dataset.assetId = assetId;
+  renderAssetImageStudio(assetId);
+  $("#asset-images-dialog").showModal();
+  startAssetImagePolling(assetId);
+}
+
+function startAssetImagePolling(assetId) {
+  clearInterval(state.imagePollTimer);
+  if (!(state.assetImages.get(assetId) || []).some(image => ["pending", "generating"].includes(image.status))) return;
+  state.imagePollTimer = setInterval(async () => {
+    if (!$("#asset-images-dialog").open) return clearInterval(state.imagePollTimer);
+    try {
+      const images = await request(`/assets/${assetId}/images`);
+      state.assetImages.set(assetId, images);
+      renderAssetImageStudio(assetId);
+      if (!images.some(image => ["pending", "generating"].includes(image.status))) {
+        clearInterval(state.imagePollTimer);
+        state.assets = await request(`/projects/${state.project.id}/assets`);
+        renderAssets();
+      }
+    } catch (error) { clearInterval(state.imagePollTimer); toast(error.message, "error"); }
+  }, 2000);
+}
+
+async function generateAssetImage(assetId, provider) {
+  const image = await request(`/assets/${assetId}/images/generate`, {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+  });
+  state.assetImages.set(assetId, [image, ...(state.assetImages.get(assetId) || [])]);
+  renderAssetImageStudio(assetId);
+  startAssetImagePolling(assetId);
+  toast("图片生成任务已开始");
+}
+
 // Closing a dialog must never enter form validation or asynchronous business handling.
 document.addEventListener("click", event => {
   const closeButton = event.target.closest("[data-close-dialog]");
@@ -249,6 +351,12 @@ document.addEventListener("click", async event => {
   const assetPromptButton = event.target.closest("[data-asset-prompt]");
   const previewAssetPromptButton = event.target.closest("[data-preview-asset-prompt]");
   const copyAssetPromptButton = event.target.closest("[data-copy-asset-prompt]");
+  const assetImagesButton = event.target.closest("[data-asset-images]");
+  const primaryImageButton = event.target.closest("[data-set-primary-image]");
+  const deleteAssetImageButton = event.target.closest("[data-delete-asset-image]");
+  const retryImageButton = event.target.closest("[data-retry-image]");
+  const copyLocalPathButton = event.target.closest("[data-copy-local-path]");
+  const deleteShotButton = event.target.closest("[data-delete-shot]");
   const shotCard = event.target.closest("[data-shot-id]");
   try {
     if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
@@ -263,9 +371,43 @@ document.addEventListener("click", async event => {
       await navigator.clipboard.writeText(asset.prompt);
       toast(`@${asset.name} 的提示词已复制`);
     }
+    else if (assetImagesButton) await openAssetImageStudio(assetImagesButton.dataset.assetImages);
+    else if (primaryImageButton) {
+      const assetId = $("#asset-images-dialog").dataset.assetId;
+      const asset = await request(`/assets/${assetId}/images/${primaryImageButton.dataset.setPrimaryImage}/primary`, { method: "PATCH" });
+      state.assets = state.assets.map(item => item.id === asset.id ? asset : item);
+      state.assetImages.set(assetId, await request(`/assets/${assetId}/images`));
+      renderAssetImageStudio(assetId); renderAssets(); toast("主参考图已更新");
+    }
+    else if (deleteAssetImageButton) {
+      if (!window.confirm("确定删除这张候选图吗？")) return;
+      const assetId = $("#asset-images-dialog").dataset.assetId;
+      await request(`/assets/${assetId}/images/${deleteAssetImageButton.dataset.deleteAssetImage}`, { method: "DELETE" });
+      state.assetImages.set(assetId, await request(`/assets/${assetId}/images`));
+      state.assets = await request(`/projects/${state.project.id}/assets`);
+      renderAssetImageStudio(assetId); renderAssets(); toast("候选图已删除");
+    }
+    else if (retryImageButton) await generateAssetImage($("#asset-images-dialog").dataset.assetId, retryImageButton.dataset.retryImage);
+    else if (copyLocalPathButton) {
+      const assetId = $("#asset-images-dialog").dataset.assetId;
+      const image = (state.assetImages.get(assetId) || []).find(item => item.id === copyLocalPathButton.dataset.copyLocalPath);
+      if (image?.local_path) { await navigator.clipboard.writeText(image.local_path); toast("本地保存地址已复制"); }
+    }
+    else if (deleteShotButton) await deleteShot(deleteShotButton.dataset.deleteShot);
     else if (shotCard) openShotDialog(state.scenes.flatMap(s => s.shots).find(s => s.id === shotCard.dataset.shotId));
     else if (event.target.closest("#new-project-button") || actionButton?.dataset.action === "new-project") openProjectDialog();
     else if (actionButton?.dataset.action === "edit-project") openProjectDialog(state.project);
+    else if (actionButton?.dataset.action === "toggle-asset-selection") {
+      state.assetSelectionMode = !state.assetSelectionMode;
+      state.selectedAssetIds.clear();
+      renderAssets();
+    }
+    else if (actionButton?.dataset.action === "select-all-assets") {
+      if (state.selectedAssetIds.size === state.assets.length) state.selectedAssetIds.clear();
+      else state.selectedAssetIds = new Set(state.assets.map(asset => asset.id));
+      renderAssets();
+    }
+    else if (actionButton?.dataset.action === "delete-selected-assets") await deleteSelectedAssets();
     else if (actionButton?.dataset.action === "new-asset") openAssetDialog();
     else if (actionButton?.dataset.action === "extract-assets") await extractProjectAssets();
     else if (actionButton?.dataset.action === "generate-all-asset-prompts") await generateAllAssetPrompts();
@@ -273,6 +415,7 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "generate-script") await generateScript();
     else if (actionButton?.dataset.action === "approve-script") await approveScript();
     else if (actionButton?.dataset.action === "generate-shots") await generateShots();
+    else if (actionButton?.dataset.action === "refresh-metrics") await setStep("metrics");
     else if (actionButton?.dataset.action === "generate-all-prompts") await generateAllPrompts();
     else if (event.target.closest("[data-generate-prompt]")) await generatePrompt(event.target.closest("[data-generate-prompt]").dataset.generatePrompt);
     else if (event.target.closest("[data-copy]")) {
@@ -281,6 +424,20 @@ document.addEventListener("click", async event => {
     }
   } catch (error) { loading(false); toast(error.message, "error"); }
 });
+
+$("#asset-image-generate-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const assetId = $("#asset-images-dialog").dataset.assetId;
+  try { await generateAssetImage(assetId, $("#asset-image-provider").value); }
+  catch (error) { toast(error.message, "error"); }
+});
+
+$("#asset-image-provider").addEventListener("change", event => {
+  const provider = state.imageProviders.find(item => item.id === event.target.value);
+  $("#asset-image-provider-hint").textContent = provider ? `将使用当前资产的完整提示词。模型：${provider.model}` : "";
+});
+
+$("#asset-images-dialog").addEventListener("close", () => clearInterval(state.imagePollTimer));
 
 $("#project-form").addEventListener("submit", async event => {
   event.preventDefault();
@@ -346,6 +503,13 @@ $("#copy-previewed-asset-prompt").addEventListener("click", async () => {
 });
 
 document.addEventListener("change", async event => {
+  const selection = event.target.closest("[data-select-asset]");
+  if (selection) {
+    if (selection.checked) state.selectedAssetIds.add(selection.dataset.selectAsset);
+    else state.selectedAssetIds.delete(selection.dataset.selectAsset);
+    renderAssets();
+    return;
+  }
   const input = event.target.closest("[data-asset-upload]");
   if (!input || !input.files?.[0]) return;
   const file = input.files[0];
@@ -394,6 +558,19 @@ async function generateShots() {
   state.scenes = await request(`/scripts/${approved.id}/shots/generate`, { method: "POST" }); loading(false); state.project.status = "SHOT_LIST_REVIEW"; render(); toast("分镜拆分完成");
 }
 
+async function deleteShot(shotId) {
+  const shot = state.scenes.flatMap(scene => scene.shots).find(item => item.id === shotId);
+  if (!window.confirm(`确定删除镜头 ${shot?.sequence || ""} 吗？该镜头已有的提示词也会被删除。`)) return;
+  loading(true, "正在删除镜头", "正在更新同场次的镜头顺序");
+  await request(`/shots/${shotId}`, { method: "DELETE" });
+  state.scenes = await request(`/projects/${state.project.id}/scenes`);
+  state.prompts.delete(shotId);
+  $("#shot-dialog").close();
+  loading(false);
+  renderShots();
+  toast("镜头已删除，序号已重新整理");
+}
+
 async function extractProjectAssets() {
   loading(true, "AI 正在分析视觉资产", "正在识别人物、场景和关键道具");
   state.assets = await request(`/projects/${state.project.id}/assets/extract`, { method: "POST" });
@@ -433,6 +610,36 @@ async function generateAllAssetPrompts() {
     toast(`已完成 ${state.assets.length - failed.length}/${state.assets.length} 个资产，${failed.length} 个失败`, "error");
   } else {
     toast(`全部 ${state.assets.length} 个资产提示词已生成`);
+  }
+}
+
+async function deleteSelectedAssets() {
+  const selectedIds = [...state.selectedAssetIds];
+  if (!selectedIds.length) return;
+  if (!window.confirm(`确定删除选中的 ${selectedIds.length} 个资产及其参考图吗？`)) return;
+
+  const failedIds = [];
+  loading(true, `正在删除资产 0/${selectedIds.length}`, "请稍候");
+  for (let index = 0; index < selectedIds.length; index += 1) {
+    const assetId = selectedIds[index];
+    const asset = state.assets.find(item => item.id === assetId);
+    $("#loading-title").textContent = `正在删除资产 ${index + 1}/${selectedIds.length}`;
+    $("#loading-copy").textContent = asset ? `当前资产：@${asset.name}` : "正在处理选中资产";
+    try {
+      await request(`/assets/${assetId}`, { method: "DELETE" });
+      state.assets = state.assets.filter(item => item.id !== assetId);
+    } catch (error) {
+      failedIds.push(assetId);
+    }
+  }
+  loading(false);
+  state.selectedAssetIds = new Set(failedIds);
+  state.assetSelectionMode = failedIds.length > 0;
+  renderAssets();
+  if (failedIds.length) {
+    toast(`已删除 ${selectedIds.length - failedIds.length}/${selectedIds.length} 个资产，${failedIds.length} 个失败`, "error");
+  } else {
+    toast(`已删除 ${selectedIds.length} 个资产`);
   }
 }
 

@@ -4,18 +4,33 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, inspect, select, text
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from app.config import get_settings
 from app.database import Base, engine, get_db
-from app.models import Asset, Project, ProjectStatus, PromptVersion, Scene, ScriptVersion, Shot
+from app.models import (
+    AgentRun,
+    Asset,
+    AssetImage,
+    Project,
+    ProjectStatus,
+    PromptVersion,
+    Scene,
+    ScriptVersion,
+    Shot,
+)
 from app.schemas import (
+    AgentMetricsRead,
     AssetCreate,
+    AssetImageGenerateRequest,
+    AssetImageRead,
     AssetRead,
     AssetUpdate,
+    ImageProviderRead,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -28,12 +43,14 @@ from app.schemas import (
     ShotUpdate,
 )
 from app.services.deepseek import DeepSeekClient, DeepSeekError
+from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.workflow import (
     extract_assets,
     generate_asset_prompt,
     generate_prompt,
     generate_script,
     generate_storyboard,
+    validate_storyboard,
 )
 
 
@@ -101,6 +118,102 @@ def require_asset(db: Session, asset_id: str) -> Asset:
     return asset
 
 
+def require_asset_image(db: Session, asset_id: str, image_id: str) -> AssetImage:
+    image = db.get(AssetImage, image_id)
+    if image is None or image.asset_id != asset_id:
+        raise HTTPException(status_code=404, detail="Asset image not found")
+    return image
+
+
+def _storage_file(relative_path: str | None) -> Path | None:
+    if not relative_path:
+        return None
+    path = (STORAGE_DIR / relative_path).resolve()
+    return path if path.is_relative_to(STORAGE_DIR.resolve()) else None
+
+
+def _safe_path_name(value: str, fallback: str) -> str:
+    cleaned = unicodedata.normalize("NFKC", value).strip()
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return (cleaned[:80].strip(" .") or fallback)
+
+
+def _asset_image_relative_path(asset: Asset, image_id: str, extension: str) -> Path:
+    type_folders = {"character": "人物", "location": "场景", "prop": "道具"}
+    project_name = _safe_path_name(asset.project.name, "未命名项目")
+    asset_name = _safe_path_name(asset.name, "未命名资产")
+    project_folder = f"{project_name}-{asset.project_id[:8]}"
+    type_folder = type_folders.get(asset.asset_type, "其他")
+    filename = f"{asset_name}-{image_id[:8]}{extension}"
+    return Path("projects") / project_folder / type_folder / asset_name / filename
+
+
+def _ensure_legacy_asset_image(db: Session, asset: Asset) -> None:
+    if not asset.image_path:
+        return
+    exists = db.scalar(
+        select(AssetImage.id).where(
+            AssetImage.asset_id == asset.id,
+            AssetImage.image_path == asset.image_path,
+        )
+    )
+    if exists:
+        return
+    db.add(
+        AssetImage(
+            asset_id=asset.id,
+            source="upload",
+            status="ready",
+            image_path=asset.image_path,
+            is_primary=True,
+        )
+    )
+    db.flush()
+
+
+def _run_asset_image_generation(image_id: str, bind) -> None:
+    task_session = sessionmaker(bind=bind, autoflush=False, expire_on_commit=False)
+    with task_session() as db:
+        image = db.get(AssetImage, image_id)
+        if image is None:
+            return
+        image.status = "generating"
+        db.commit()
+        try:
+            generated, model = generate_image(
+                image.provider or "",
+                image.prompt_snapshot,
+                size=image.size,
+                quality=image.quality,
+            )
+            relative_path = _asset_image_relative_path(
+                image.asset, image.id, generated.extension
+            )
+            output_path = STORAGE_DIR / relative_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(generated.content)
+            image.image_path = relative_path.as_posix()
+            image.model = model
+            image.status = "ready"
+            image.error_message = None
+            if not image.asset.image_path:
+                db.query(AssetImage).filter(AssetImage.asset_id == image.asset_id).update(
+                    {AssetImage.is_primary: False}
+                )
+                image.is_primary = True
+                image.asset.image_path = image.image_path
+            db.commit()
+        except (ImageGenerationError, RuntimeError) as exc:
+            image.status = "failed"
+            image.error_message = str(exc)
+            db.commit()
+        except Exception:
+            image.status = "failed"
+            image.error_message = "图片生成发生未知错误，请稍后重试。"
+            db.commit()
+
+
 def _clean_asset_name(asset_type: str, name: str) -> str:
     cleaned = unicodedata.normalize("NFKC", name).strip().lstrip("@").strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
@@ -117,6 +230,25 @@ def _asset_identity(asset_type: str, name: str) -> tuple[str, str]:
 @app.get(f"{API}/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get(f"{API}/image-providers", response_model=list[ImageProviderRead])
+def list_image_providers() -> list[dict]:
+    settings = get_settings()
+    return [
+        {
+            "id": "openai",
+            "name": "GPT Image 2",
+            "model": settings.openai_image_model,
+            "configured": settings.provider_configured("openai"),
+        },
+        {
+            "id": "seedream",
+            "name": "Seedream 5.0 Lite",
+            "model": settings.seedream_model,
+            "configured": settings.provider_configured("seedream"),
+        },
+    ]
 
 
 @app.post(f"{API}/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -304,9 +436,10 @@ def update_asset(asset_id: str, payload: AssetUpdate, db: DbSession) -> Asset:
 @app.delete(f"{API}/assets/{{asset_id}}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_asset(asset_id: str, db: DbSession) -> Response:
     asset = require_asset(db, asset_id)
-    if asset.image_path:
-        image_path = (STORAGE_DIR / asset.image_path).resolve()
-        if image_path.is_relative_to(STORAGE_DIR.resolve()) and image_path.exists():
+    paths = {asset.image_path, *(image.image_path for image in asset.images)}
+    for relative_path in paths:
+        image_path = _storage_file(relative_path)
+        if image_path and image_path.exists():
             image_path.unlink()
     db.delete(asset)
     db.commit()
@@ -389,16 +522,133 @@ async def upload_asset_image(asset_id: str, request: Request, db: DbSession) -> 
     content = await request.body()
     if not content or len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Image must be between 1 byte and 10 MB")
-    if asset.image_path:
-        previous = (STORAGE_DIR / asset.image_path).resolve()
-        if previous.is_relative_to(STORAGE_DIR.resolve()) and previous.exists():
-            previous.unlink()
-    relative_path = Path("assets") / f"{asset.id}{extension}"
-    (STORAGE_DIR / relative_path).write_bytes(content)
+    _ensure_legacy_asset_image(db, asset)
+    db.query(AssetImage).filter(AssetImage.asset_id == asset.id).update(
+        {AssetImage.is_primary: False}
+    )
+    image = AssetImage(
+        asset_id=asset.id,
+        source="upload",
+        status="ready",
+        size="original",
+        quality="original",
+        is_primary=True,
+    )
+    db.add(image)
+    db.flush()
+    relative_path = _asset_image_relative_path(asset, image.id, extension)
+    output_path = STORAGE_DIR / relative_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(content)
+    image.image_path = relative_path.as_posix()
     asset.image_path = relative_path.as_posix()
     db.commit()
     db.refresh(asset)
     return asset
+
+
+@app.get(f"{API}/assets/{{asset_id}}/images", response_model=list[AssetImageRead])
+def list_asset_images(asset_id: str, db: DbSession) -> list[AssetImage]:
+    asset = require_asset(db, asset_id)
+    _ensure_legacy_asset_image(db, asset)
+    db.commit()
+    statement = (
+        select(AssetImage)
+        .where(AssetImage.asset_id == asset.id)
+        .order_by(AssetImage.created_at.desc())
+    )
+    return list(db.scalars(statement).all())
+
+
+@app.post(
+    f"{API}/assets/{{asset_id}}/images/generate",
+    response_model=AssetImageRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_asset_image_generation(
+    asset_id: str,
+    payload: AssetImageGenerateRequest,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+) -> AssetImage:
+    asset = require_asset(db, asset_id)
+    if not asset.prompt.strip():
+        raise HTTPException(status_code=409, detail="请先生成或填写资产提示词")
+    settings = get_settings()
+    if not settings.provider_configured(payload.provider):
+        raise HTTPException(
+            status_code=409,
+            detail="该图片供应商尚未配置，请填写 config.local.env 后重启服务",
+        )
+    model = (
+        settings.openai_image_model
+        if payload.provider == "openai"
+        else settings.seedream_model
+    )
+    image = AssetImage(
+        asset_id=asset.id,
+        provider=payload.provider,
+        model=model,
+        prompt_snapshot=asset.prompt.strip(),
+        size="1536x1024",
+        quality="high",
+        status="pending",
+    )
+    db.add(image)
+    db.commit()
+    db.refresh(image)
+    background_tasks.add_task(_run_asset_image_generation, image.id, db.get_bind())
+    return image
+
+
+@app.patch(
+    f"{API}/assets/{{asset_id}}/images/{{image_id}}/primary",
+    response_model=AssetRead,
+)
+def set_primary_asset_image(asset_id: str, image_id: str, db: DbSession) -> Asset:
+    asset = require_asset(db, asset_id)
+    image = require_asset_image(db, asset_id, image_id)
+    if image.status != "ready" or not image.image_path:
+        raise HTTPException(status_code=409, detail="只有生成完成的图片才能设为主参考图")
+    db.query(AssetImage).filter(AssetImage.asset_id == asset.id).update(
+        {AssetImage.is_primary: False}
+    )
+    image.is_primary = True
+    asset.image_path = image.image_path
+    db.commit()
+    db.refresh(asset)
+    return asset
+
+
+@app.delete(
+    f"{API}/assets/{{asset_id}}/images/{{image_id}}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_asset_image(asset_id: str, image_id: str, db: DbSession) -> Response:
+    asset = require_asset(db, asset_id)
+    image = require_asset_image(db, asset_id, image_id)
+    was_primary = image.is_primary or asset.image_path == image.image_path
+    image_path = _storage_file(image.image_path)
+    db.delete(image)
+    db.flush()
+    if was_primary:
+        replacement = db.scalar(
+            select(AssetImage)
+            .where(
+                AssetImage.asset_id == asset.id,
+                AssetImage.id != image_id,
+                AssetImage.status == "ready",
+                AssetImage.image_path.is_not(None),
+            )
+            .order_by(AssetImage.created_at.desc())
+        )
+        asset.image_path = replacement.image_path if replacement else None
+        if replacement:
+            replacement.is_primary = True
+    db.commit()
+    if image_path and image_path.exists():
+        image_path.unlink()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post(f"{API}/scripts/{{script_id}}/shots/generate", response_model=list[SceneRead])
@@ -407,10 +657,53 @@ def create_shots(script_id: str, db: DbSession) -> list[Scene]:
     if not script.is_approved:
         raise HTTPException(status_code=409, detail="Approve the script before generating shots")
     project = script.project
+    is_regeneration = bool(
+        db.scalar(
+            select(func.count(AgentRun.id)).where(
+                AgentRun.operation == "storyboard_generation",
+                AgentRun.target_id == script.id,
+            )
+        )
+    )
     try:
         draft = generate_storyboard(DeepSeekClient(), project, script.content)
     except DeepSeekError as exc:
+        db.add(
+            AgentRun(
+                project_id=project.id,
+                operation="storyboard_generation",
+                target_type="script",
+                target_id=script.id,
+                status="request_failed",
+                validation_passed=None,
+                is_regeneration=is_regeneration,
+                error_message=str(exc),
+            )
+        )
+        db.commit()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    validation_results = validate_storyboard(draft, script.content)
+    validation_passed = all(item["passed"] for item in validation_results)
+    run = AgentRun(
+        project_id=project.id,
+        operation="storyboard_generation",
+        target_type="script",
+        target_id=script.id,
+        status="passed" if validation_passed else "validation_failed",
+        validation_passed=validation_passed,
+        validation_results=validation_results,
+        is_regeneration=is_regeneration,
+    )
+    db.add(run)
+    if not validation_passed:
+        failed_labels = [item["label"] for item in validation_results if not item["passed"]]
+        run.error_message = "、".join(failed_labels)
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail=f"分镜结果未通过校验：{'、'.join(failed_labels)}。旧分镜已保留。",
+        )
 
     existing = list(db.scalars(select(Scene).where(Scene.project_id == project.id)).all())
     for scene in existing:
@@ -437,6 +730,50 @@ def create_shots(script_id: str, db: DbSession) -> list[Scene]:
     return list(db.scalars(statement).all())
 
 
+@app.get(
+    f"{API}/projects/{{project_id}}/agent-metrics",
+    response_model=AgentMetricsRead,
+)
+def get_agent_metrics(project_id: str, db: DbSession) -> dict:
+    require_project(db, project_id)
+    runs = list(
+        db.scalars(
+            select(AgentRun)
+            .where(AgentRun.project_id == project_id)
+            .order_by(AgentRun.created_at.desc())
+        ).all()
+    )
+    passed_runs = sum(run.status == "passed" for run in runs)
+    failed_runs = len(runs) - passed_runs
+    validation_totals: dict[str, dict] = {}
+    for run in runs:
+        for check in run.validation_results or []:
+            metric = validation_totals.setdefault(
+                check["key"],
+                {"key": check["key"], "label": check["label"], "total": 0, "passed": 0},
+            )
+            metric["total"] += 1
+            metric["passed"] += int(check["passed"])
+    validations = [
+        {
+            **metric,
+            "pass_rate": round(metric["passed"] / metric["total"] * 100, 1),
+        }
+        for metric in validation_totals.values()
+    ]
+    return {
+        "total_runs": len(runs),
+        "passed_runs": passed_runs,
+        "failed_runs": failed_runs,
+        "pass_rate": round(passed_runs / len(runs) * 100, 1) if runs else 0.0,
+        "regeneration_count": sum(run.is_regeneration for run in runs),
+        "validation_failed_count": sum(run.status == "validation_failed" for run in runs),
+        "request_failed_count": sum(run.status == "request_failed" for run in runs),
+        "validations": validations,
+        "recent_runs": runs[:20],
+    }
+
+
 @app.get(f"{API}/projects/{{project_id}}/scenes", response_model=list[SceneRead])
 def list_scenes(project_id: str, db: DbSession) -> list[Scene]:
     require_project(db, project_id)
@@ -457,6 +794,28 @@ def update_shot(shot_id: str, payload: ShotUpdate, db: DbSession) -> Shot:
     db.commit()
     db.refresh(shot)
     return shot
+
+
+@app.delete(f"{API}/shots/{{shot_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_shot(shot_id: str, db: DbSession) -> Response:
+    shot = require_shot(db, shot_id)
+    scene_id = shot.scene_id
+    db.delete(shot)
+    db.flush()
+    remaining = list(
+        db.scalars(
+            select(Shot).where(Shot.scene_id == scene_id).order_by(Shot.sequence)
+        ).all()
+    )
+    # Move through a collision-free temporary range before assigning final values.
+    # SQLite can otherwise update rows out of order and violate (scene_id, sequence).
+    for temporary_sequence, remaining_shot in enumerate(remaining, start=1):
+        remaining_shot.sequence = -temporary_sequence
+    db.flush()
+    for sequence, remaining_shot in enumerate(remaining, start=1):
+        remaining_shot.sequence = sequence
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post(f"{API}/shots/{{shot_id}}/prompts/generate", response_model=PromptRead)

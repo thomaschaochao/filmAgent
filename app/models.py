@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 
 from sqlalchemy import (
     JSON,
@@ -82,10 +83,46 @@ class Asset(Base):
     )
 
     project: Mapped[Project] = relationship(back_populates="assets")
+    images: Mapped[list["AssetImage"]] = relationship(
+        back_populates="asset", cascade="all, delete-orphan", order_by="AssetImage.created_at"
+    )
 
     @property
     def image_url(self) -> str | None:
         return f"/storage/{self.image_path}" if self.image_path else None
+
+class AssetImage(Base):
+    __tablename__ = "asset_images"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="generated")
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_snapshot: Mapped[str] = mapped_column(Text, default="")
+    size: Mapped[str] = mapped_column(String(32), default="1536x1024")
+    quality: Mapped[str] = mapped_column(String(32), default="high")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    asset: Mapped[Asset] = relationship(back_populates="images")
+
+    @property
+    def image_url(self) -> str | None:
+        return f"/storage/{self.image_path}" if self.image_path else None
+
+    @property
+    def local_path(self) -> str | None:
+        if not self.image_path:
+            return None
+        storage_root = (Path(__file__).resolve().parent.parent / "storage").resolve()
+        return str((storage_root / self.image_path).resolve())
 
 
 class ScriptVersion(Base):
@@ -168,3 +205,21 @@ class PromptVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     shot: Mapped[Shot] = relationship(back_populates="prompts")
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    target_type: Mapped[str] = mapped_column(String(32), default="project")
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    validation_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    validation_results: Mapped[list] = mapped_column(JSON, default=list)
+    is_regeneration: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
