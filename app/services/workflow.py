@@ -1,12 +1,46 @@
 import json
 import re
 import unicodedata
+from typing import TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.models import Asset, Project, Shot
 from app.schemas import AssetExtractionDraft, PromptDraft, StoryboardDraft
 from app.services.deepseek import DeepSeekClient, DeepSeekError
+
+DraftT = TypeVar("DraftT", bound=BaseModel)
+
+
+def _validated_json(
+    client: DeepSeekClient,
+    system: str,
+    user: str,
+    model: type[DraftT],
+    operation: str,
+) -> DraftT:
+    last_error: ValidationError | None = None
+    current_user = user
+    total_attempts = 0
+    for _schema_attempt in range(1, 3):
+        try:
+            payload = client.chat_json(system, current_user)
+            total_attempts += max(getattr(client, "attempt_count", 1), 1)
+            result = model.model_validate(payload)
+            if hasattr(client, "last_call"):
+                client.last_call["attempt_count"] = total_attempts
+            client.attempt_count = total_attempts
+            return result
+        except ValidationError as exc:
+            last_error = exc
+            current_user = (
+                f"{user}\n\n上一次输出未通过 JSON Schema。只修复结构和缺失字段后重新输出。"
+                f"校验错误：{json.dumps(exc.errors(include_url=False), ensure_ascii=False)}"
+            )
+    raise DeepSeekError(
+        f"DeepSeek {operation} output failed schema validation after repair.",
+        error_type="schema_validation",
+    ) from last_error
 
 
 def _comparable_text(value: str) -> str:
@@ -14,7 +48,13 @@ def _comparable_text(value: str) -> str:
     return re.sub(r"[^\w\u3400-\u9fff]+", "", value)
 
 
-def validate_storyboard(draft: StoryboardDraft, script: str) -> list[dict]:
+def validate_storyboard(
+    draft: StoryboardDraft,
+    script: str,
+    *,
+    reference_coverage_threshold: float = 0.8,
+    reference_match_threshold: float = 0.7,
+) -> list[dict]:
     """Run deterministic checks before generated storyboard data is persisted."""
     checks: list[dict] = []
     expected_scenes = list(range(1, len(draft.scenes) + 1))
@@ -56,9 +96,9 @@ def validate_storyboard(draft: StoryboardDraft, script: str) -> list[dict]:
         {
             "key": "script_reference_coverage",
             "label": "剧本引用覆盖率",
-            "passed": coverage >= 0.8,
+            "passed": coverage >= reference_coverage_threshold,
             "value": round(coverage, 4),
-            "threshold": 0.8,
+            "threshold": reference_coverage_threshold,
             "detail": f"{len(referenced)}/{len(shots)} 个镜头含剧本引用",
         }
     )
@@ -75,9 +115,9 @@ def validate_storyboard(draft: StoryboardDraft, script: str) -> list[dict]:
         {
             "key": "script_reference_match",
             "label": "剧本引用匹配率",
-            "passed": match_rate >= 0.7,
+            "passed": match_rate >= reference_match_threshold,
             "value": round(match_rate, 4),
-            "threshold": 0.7,
+            "threshold": reference_match_threshold,
             "detail": f"{matched}/{len(referenced)} 条引用可在原剧本中找到",
         }
     )
@@ -126,7 +166,14 @@ def generate_script(
     user = f"标题：{title}\n语言：{language}\n故事梗概：{brief}\n额外要求：{instructions or '无'}"
     if world_setting:
         user += f"\n世界与地域设定：{world_setting}"
-    return client.chat_text(system, user)
+    content = client.chat_text(system, user).strip()
+    minimum = getattr(getattr(client, "settings", None), "script_min_characters", 50)
+    if len(content) < minimum or "```" in content:
+        raise DeepSeekError(
+            f"DeepSeek script output failed validation (minimum {minimum} characters).",
+            error_type="output_validation",
+        )
+    return content
 
 
 def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -> StoryboardDraft:
@@ -142,10 +189,7 @@ def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -
         f"语言：{project.language}\n世界与地域设定：{project.world_setting or '未指定'}\n"
         f"剧本：\n{script}"
     )
-    try:
-        return StoryboardDraft.model_validate(client.chat_json(system, user))
-    except ValidationError as exc:
-        raise DeepSeekError("DeepSeek storyboard output failed schema validation.") from exc
+    return _validated_json(client, system, user, StoryboardDraft, "storyboard")
 
 
 def extract_assets(
@@ -167,10 +211,7 @@ def extract_assets(
         f"世界与地域设定：{project.world_setting or '未指定'}\n"
         f"剧本：\n{script}"
     )
-    try:
-        return AssetExtractionDraft.model_validate(client.chat_json(system, user))
-    except ValidationError as exc:
-        raise DeepSeekError("DeepSeek asset extraction failed schema validation.") from exc
+    return _validated_json(client, system, user, AssetExtractionDraft, "asset extraction")
 
 
 def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset) -> str:
@@ -219,6 +260,12 @@ def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset
         ensure_ascii=False,
     )
     generated = client.chat_text(system, user).strip()
+    minimum = getattr(getattr(client, "settings", None), "asset_prompt_min_characters", 20)
+    if len(generated) < minimum or "```" in generated:
+        raise DeepSeekError(
+            f"DeepSeek asset prompt failed validation (minimum {minimum} characters).",
+            error_type="output_validation",
+        )
     return f"{layout_requirement}。{project_context}。{generated}"
 
 
@@ -259,7 +306,7 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
         ensure_ascii=False,
     )
     try:
-        draft = PromptDraft.model_validate(client.chat_json(system, user))
+        draft = _validated_json(client, system, user, PromptDraft, "shot prompt")
         shot_text = " ".join(
             value or ""
             for value in [
@@ -275,9 +322,7 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
             f"@{asset.name}" for asset in project.assets if asset.name.casefold() in shot_text
         ]
         prefix = " ".join(ref for ref in references if ref not in draft.positive_prompt)
-        positive_prompt = (
-            f"{prefix}, {draft.positive_prompt}" if prefix else draft.positive_prompt
-        )
+        positive_prompt = f"{prefix}, {draft.positive_prompt}" if prefix else draft.positive_prompt
         return draft.model_copy(
             update={
                 "positive_prompt": positive_prompt,
@@ -285,4 +330,6 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
             }
         )
     except ValidationError as exc:
-        raise DeepSeekError("DeepSeek prompt output failed schema validation.") from exc
+        raise DeepSeekError(
+            "DeepSeek prompt output failed validation.", error_type="output_validation"
+        ) from exc

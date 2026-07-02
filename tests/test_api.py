@@ -189,11 +189,9 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
 
     monkeypatch.setattr(
         "app.main.generate_prompt",
-        lambda *args: PromptDraft(positive_prompt="existing prompt"),
+        lambda *args: PromptDraft(positive_prompt="existing cinematic storyboard prompt"),
     )
-    prompt_response = client.post(
-        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate"
-    )
+    prompt_response = client.post(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate")
     assert prompt_response.status_code == 200
 
     delete_response = client.delete(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}")
@@ -205,10 +203,15 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     second_generation = client.post(f"/api/v1/scripts/{script['id']}/shots/generate")
     assert second_generation.status_code == 200
     metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
-    assert metrics["total_runs"] == 2
-    assert metrics["passed_runs"] == 2
+    assert metrics["total_runs"] == 3
+    assert metrics["passed_runs"] == 3
     assert metrics["regeneration_count"] == 1
     assert metrics["pass_rate"] == 100.0
+    snapshots = client.get(f"/api/v1/projects/{project['id']}/storyboard-snapshots").json()
+    assert [snapshot["version"] for snapshot in snapshots] == [2, 1]
+    restore = client.post(f"/api/v1/storyboard-snapshots/{snapshots[-1]['id']}/restore")
+    assert restore.status_code == 200
+    assert len(restore.json()[0]["shots"]) == 4
 
 
 def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
@@ -252,7 +255,50 @@ def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
     assert metrics["validation_failed_count"] == 1
     assert metrics["pass_rate"] == 0.0
     failed_keys = {
-        item["key"] for item in metrics["recent_runs"][0]["validation_results"]
+        item["key"]
+        for item in metrics["recent_runs"][0]["validation_results"]
         if not item["passed"]
     }
     assert {"scene_sequence", "script_reference_match"} <= failed_keys
+
+
+def test_script_and_asset_operations_are_recorded(client, monkeypatch):
+    from app.schemas import AssetDraft, AssetExtractionDraft
+
+    project = client.post("/api/v1/projects", json={"name": "Metrics"}).json()
+    monkeypatch.setattr(
+        "app.main.generate_script",
+        lambda *args, **kwargs: (
+            "A complete screenplay with scenes, action, dialogue, and a visible ending."
+        ),
+    )
+    script_response = client.post(
+        f"/api/v1/projects/{project['id']}/scripts/generate",
+        json={"brief": "A pilot returns home", "title": "Return"},
+    )
+    assert script_response.status_code == 200
+    script = script_response.json()
+    client.post(f"/api/v1/scripts/{script['id']}/approve")
+    monkeypatch.setattr(
+        "app.main.extract_assets",
+        lambda *args: AssetExtractionDraft(
+            assets=[
+                AssetDraft(asset_type="character", name="Pilot", description="middle-aged pilot")
+            ]
+        ),
+    )
+    assert client.post(f"/api/v1/projects/{project['id']}/assets/extract").status_code == 200
+    asset = client.get(f"/api/v1/projects/{project['id']}/assets").json()[0]
+    monkeypatch.setattr(
+        "app.main.generate_asset_prompt",
+        lambda *args: "Detailed character turnaround prompt with stable visible features.",
+    )
+    assert client.post(f"/api/v1/assets/{asset['id']}/prompt/generate").status_code == 200
+
+    metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
+    operations = {run["operation"] for run in metrics["recent_runs"]}
+    assert {
+        "script_generation",
+        "asset_extraction",
+        "asset_prompt_generation",
+    } <= operations

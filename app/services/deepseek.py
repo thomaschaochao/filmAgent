@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any
 
 import httpx
@@ -7,30 +8,42 @@ from app.config import Settings, get_settings
 
 
 class DeepSeekError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, error_type: str = "deepseek_error") -> None:
+        super().__init__(message)
+        self.error_type = error_type
 
 
 class DeepSeekClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self.last_call: dict[str, Any] = {}
+        self.attempt_count = 0
 
     def chat_text(self, system_prompt: str, user_prompt: str) -> str:
+        self.attempt_count = 1
         return self._request(system_prompt, user_prompt, json_output=False)
 
     def chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         last_error: Exception | None = None
-        for _ in range(2):
+        for attempt in range(1, 3):
+            self.attempt_count = attempt
             try:
                 content = self._request(system_prompt, user_prompt, json_output=True)
                 if not content.strip():
-                    raise DeepSeekError("DeepSeek returned empty content.")
+                    raise DeepSeekError(
+                        "DeepSeek returned empty content.", error_type="empty_output"
+                    )
                 parsed = json.loads(content)
                 if not isinstance(parsed, dict):
-                    raise DeepSeekError("DeepSeek JSON response must be an object.")
+                    raise DeepSeekError(
+                        "DeepSeek JSON response must be an object.", error_type="json_shape"
+                    )
                 return parsed
             except (json.JSONDecodeError, DeepSeekError) as exc:
                 last_error = exc
-        raise DeepSeekError("DeepSeek did not return valid structured JSON.") from last_error
+        raise DeepSeekError(
+            "DeepSeek did not return valid structured JSON.", error_type="json_parse"
+        ) from last_error
 
     def _request(self, system_prompt: str, user_prompt: str, *, json_output: bool) -> str:
         payload: dict[str, Any] = {
@@ -39,7 +52,7 @@ class DeepSeekClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "max_tokens": 8192,
+            "max_tokens": self.settings.deepseek_max_tokens,
             "thinking": {"type": "disabled"},
         }
         if json_output:
@@ -50,15 +63,35 @@ class DeepSeekClient:
             "Content-Type": "application/json",
         }
         url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
+        started = time.perf_counter()
         try:
             with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
                 response = client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise DeepSeekError("DeepSeek API request failed.") from exc
+            self.last_call = {
+                "provider": "deepseek",
+                "model": self.settings.deepseek_model,
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "attempt_count": self.attempt_count,
+            }
+            raise DeepSeekError("DeepSeek API request failed.", error_type="http_error") from exc
 
         data = response.json()
+        usage = data.get("usage") or {}
+        self.last_call = {
+            "provider": "deepseek",
+            "model": data.get("model") or self.settings.deepseek_model,
+            "request_id": data.get("id") or response.headers.get("x-request-id"),
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "attempt_count": self.attempt_count,
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
+        }
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
-            raise DeepSeekError("DeepSeek API returned an unexpected response shape.") from exc
+            raise DeepSeekError(
+                "DeepSeek API returned an unexpected response shape.",
+                error_type="response_shape",
+            ) from exc

@@ -1,6 +1,10 @@
+import pytest
+
 from app.models import Asset, Project, Shot
-from app.schemas import SceneDraft, ShotDraft, StoryboardDraft
+from app.schemas import AssetExtractionDraft, SceneDraft, ShotDraft, StoryboardDraft
+from app.services.deepseek import DeepSeekError
 from app.services.workflow import (
+    extract_assets,
     generate_asset_prompt,
     generate_prompt,
     generate_script,
@@ -14,7 +18,9 @@ class RecordingClient:
 
     def chat_text(self, system_prompt: str, user_prompt: str) -> str:
         self.user_prompt = user_prompt
-        return "generated script"
+        return (
+            "A complete generated screenplay with scenes, visible action, characters, and dialogue."
+        )
 
     def chat_json(self, system_prompt: str, user_prompt: str) -> dict:
         self.user_prompt = user_prompt
@@ -146,8 +152,7 @@ def test_storyboard_validation_reports_sequences_coverage_matches_and_duplicates
         ]
     )
     checks = {
-        check["key"]: check
-        for check in validate_storyboard(storyboard, "夜。女孩走进车站。")
+        check["key"]: check for check in validate_storyboard(storyboard, "夜。女孩走进车站。")
     }
     assert checks["scene_sequence"]["passed"] is True
     assert checks["shot_sequence"]["passed"] is True
@@ -155,3 +160,39 @@ def test_storyboard_validation_reports_sequences_coverage_matches_and_duplicates
     assert checks["script_reference_match"]["passed"] is True
     assert checks["duplicate_shots"]["passed"] is False
     assert checks["duplicate_shots"]["value"] == 1
+
+
+def test_script_text_validation_rejects_empty_or_markdown_output():
+    client = RecordingClient()
+    client.chat_text = lambda *_: "```markdown\nshort\n```"
+    with pytest.raises(DeepSeekError) as exc_info:
+        generate_script(
+            client,
+            brief="A story",
+            title="Title",
+            instructions="",
+            language="en-US",
+        )
+    assert exc_info.value.error_type == "output_validation"
+
+
+def test_schema_validation_feedback_triggers_repair_attempt():
+    class RepairingClient:
+        def __init__(self):
+            self.calls = []
+            self.attempt_count = 0
+
+        def chat_json(self, system_prompt, user_prompt):
+            self.calls.append(user_prompt)
+            if len(self.calls) == 1:
+                return {"assets": [{"asset_type": "invalid", "name": "A"}]}
+            return {
+                "assets": [{"asset_type": "character", "name": "A", "description": "visible face"}]
+            }
+
+    client = RepairingClient()
+    project = Project(name="Repair", visual_style="cinematic")
+    result = extract_assets(client, project, "A enters the room.")
+    assert isinstance(result, AssetExtractionDraft)
+    assert len(client.calls) == 2
+    assert "上一次输出未通过 JSON Schema" in client.calls[1]

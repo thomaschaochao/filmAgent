@@ -125,6 +125,7 @@ function renderMetrics() {
     return;
   }
   const statusLabel = { passed: "通过", validation_failed: "校验失败", request_failed: "请求失败" };
+  const operationLabel = { script_generation: "剧本生成", asset_extraction: "资产提取", asset_prompt_generation: "资产提示词", storyboard_generation: "分镜生成", shot_prompt_generation: "镜头提示词" };
   $("#content").innerHTML = `
     <div class="section-head"><div><span class="eyebrow">AGENT OBSERVATORY</span><h2>Agent 评估</h2><p>当前第一阶段统计分镜生成的确定性校验与重复生成行为。</p></div><button class="button" data-action="refresh-metrics">刷新指标</button></div>
     <div class="metrics-grid">
@@ -133,10 +134,12 @@ function renderMetrics() {
       <article class="panel metric-card"><span>重复生成次数</span><strong>${metrics.regeneration_count}</strong><small>同一剧本首次生成之后的运行</small></article>
       <article class="panel metric-card"><span>校验失败</span><strong>${metrics.validation_failed_count}</strong><small>DeepSeek 返回有效，但未达质量门槛</small></article>
       <article class="panel metric-card"><span>请求失败</span><strong>${metrics.request_failed_count}</strong><small>网络、接口或结构解析失败</small></article>
+      <article class="panel metric-card"><span>累计 Token</span><strong>${metrics.total_input_tokens + metrics.total_output_tokens}</strong><small>输入 ${metrics.total_input_tokens} / 输出 ${metrics.total_output_tokens}</small></article>
+      <article class="panel metric-card"><span>平均延迟</span><strong>${metrics.average_latency_ms}ms</strong><small>仅统计供应商返回了耗时的运行</small></article>
     </div>
     <div class="metrics-layout">
       <section class="panel metrics-panel"><div class="panel-heading"><h3>各项校验通过率</h3></div>${metrics.validations.length ? `<div class="validation-list">${metrics.validations.map(item => `<div class="validation-row"><div><strong>${esc(item.label)}</strong><small>${item.passed}/${item.total} 次通过</small></div><div class="metric-progress"><i style="width:${item.pass_rate}%"></i></div><b>${item.pass_rate}%</b></div>`).join("")}</div>` : `<p class="prompt-empty">生成一次分镜后，这里会出现编号、覆盖率、引用匹配和重复镜头指标。</p>`}</section>
-      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}"><div><strong>${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")}</small></div><span>${run.error_message ? esc(run.error_message) : "全部校验通过"}</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
+      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}"><div><strong>${operationLabel[run.operation] || esc(run.operation)} · ${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")} · ${esc(run.model || "unknown model")}</small></div><span>${run.error_message ? esc(run.error_message) : `耗时 ${run.latency_ms ?? "-"}ms · Token ${(run.input_tokens || 0) + (run.output_tokens || 0)}`}</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
     </div>`;
 }
 

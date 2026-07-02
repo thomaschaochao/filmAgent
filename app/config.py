@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = 120.0
+    deepseek_max_tokens: int = 8192
+    validation_rules_version: str = "2026-07-p0"
+    storyboard_reference_coverage_threshold: float = 0.8
+    storyboard_reference_match_threshold: float = 0.7
+    script_min_characters: int = 50
+    asset_prompt_min_characters: int = 20
     openai_api_key: SecretStr | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_image_model: str = "gpt-image-2"

@@ -22,6 +22,7 @@ from app.models import (
     Scene,
     ScriptVersion,
     Shot,
+    StoryboardSnapshot,
 )
 from app.schemas import (
     AgentMetricsRead,
@@ -41,6 +42,8 @@ from app.schemas import (
     ScriptRead,
     ShotRead,
     ShotUpdate,
+    StoryboardDraft,
+    StoryboardSnapshotRead,
 )
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
@@ -63,6 +66,24 @@ async def lifespan(_: FastAPI):
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN world_setting TEXT NOT NULL DEFAULT ''")
             )
+    agent_run_columns = {column["name"] for column in inspect(engine).get_columns("agent_runs")}
+    agent_run_migrations = {
+        "error_type": "VARCHAR(64)",
+        "provider": "VARCHAR(32) NOT NULL DEFAULT 'deepseek'",
+        "model": "VARCHAR(100)",
+        "request_id": "VARCHAR(100)",
+        "latency_ms": "INTEGER",
+        "attempt_count": "INTEGER NOT NULL DEFAULT 1",
+        "input_tokens": "INTEGER",
+        "output_tokens": "INTEGER",
+        "prompt_version": "VARCHAR(64) NOT NULL DEFAULT 'v1'",
+        "rules_version": "VARCHAR(64)",
+        "rules_snapshot": "JSON NOT NULL DEFAULT '{}'",
+    }
+    with engine.begin() as connection:
+        for name, definition in agent_run_migrations.items():
+            if name not in agent_run_columns:
+                connection.execute(text(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}"))
     yield
 
 
@@ -118,6 +139,78 @@ def require_asset(db: Session, asset_id: str) -> Asset:
     return asset
 
 
+def _record_agent_run(
+    db: Session,
+    client: DeepSeekClient,
+    *,
+    project_id: str,
+    operation: str,
+    target_type: str,
+    target_id: str,
+    status: str,
+    validation_results: list[dict] | None = None,
+    error: DeepSeekError | None = None,
+    rules_snapshot: dict | None = None,
+) -> AgentRun:
+    metadata = getattr(client, "last_call", {}) or {}
+    previous = db.scalar(
+        select(func.count(AgentRun.id)).where(
+            AgentRun.operation == operation,
+            AgentRun.target_id == target_id,
+        )
+    )
+    settings = get_settings()
+    run = AgentRun(
+        project_id=project_id,
+        operation=operation,
+        target_type=target_type,
+        target_id=target_id,
+        status=status,
+        validation_passed=status == "passed" if status != "request_failed" else None,
+        validation_results=validation_results or [],
+        is_regeneration=bool(previous),
+        error_message=str(error) if error else None,
+        error_type=getattr(error, "error_type", None),
+        provider=metadata.get("provider", "deepseek"),
+        model=metadata.get("model", settings.deepseek_model),
+        request_id=metadata.get("request_id"),
+        latency_ms=metadata.get("latency_ms"),
+        attempt_count=metadata.get("attempt_count", getattr(client, "attempt_count", 1)),
+        input_tokens=metadata.get("input_tokens"),
+        output_tokens=metadata.get("output_tokens"),
+        prompt_version=f"{operation}-v1",
+        rules_version=settings.validation_rules_version,
+        rules_snapshot=rules_snapshot or {},
+    )
+    db.add(run)
+    return run
+
+
+def _failure_status(error: DeepSeekError) -> str:
+    return (
+        "validation_failed"
+        if error.error_type in {"schema_validation", "output_validation"}
+        else "request_failed"
+    )
+
+
+def _deepseek_http_status(error: DeepSeekError) -> int:
+    return 422 if _failure_status(error) == "validation_failed" else 502
+
+
+def _replace_storyboard(db: Session, project: Project, script: ScriptVersion, draft) -> None:
+    existing = list(db.scalars(select(Scene).where(Scene.project_id == project.id)).all())
+    for scene in existing:
+        db.delete(scene)
+    db.flush()
+    for scene_draft in draft.scenes:
+        scene_data = scene_draft.model_dump(exclude={"shots"})
+        scene = Scene(project_id=project.id, script_version_id=script.id, **scene_data)
+        for shot_draft in scene_draft.shots:
+            scene.shots.append(Shot(**shot_draft.model_dump()))
+        db.add(scene)
+
+
 def require_asset_image(db: Session, asset_id: str, image_id: str) -> AssetImage:
     image = db.get(AssetImage, image_id)
     if image is None or image.asset_id != asset_id:
@@ -136,7 +229,7 @@ def _safe_path_name(value: str, fallback: str) -> str:
     cleaned = unicodedata.normalize("NFKC", value).strip()
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-    return (cleaned[:80].strip(" .") or fallback)
+    return cleaned[:80].strip(" .") or fallback
 
 
 def _asset_image_relative_path(asset: Asset, image_id: str, extension: str) -> Path:
@@ -187,9 +280,7 @@ def _run_asset_image_generation(image_id: str, bind) -> None:
                 size=image.size,
                 quality=image.quality,
             )
-            relative_path = _asset_image_relative_path(
-                image.asset, image.id, generated.extension
-            )
+            relative_path = _asset_image_relative_path(image.asset, image.id, generated.extension)
             output_path = STORAGE_DIR / relative_path
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(generated.content)
@@ -329,9 +420,10 @@ def create_ai_script(
     db: DbSession,
 ) -> ScriptVersion:
     project = require_project(db, project_id)
+    client = DeepSeekClient()
     try:
         content = generate_script(
-            DeepSeekClient(),
+            client,
             brief=payload.brief,
             title=payload.title,
             instructions=payload.instructions,
@@ -339,7 +431,18 @@ def create_ai_script(
             world_setting=project.world_setting,
         )
     except DeepSeekError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _record_agent_run(
+            db,
+            client,
+            project_id=project.id,
+            operation="script_generation",
+            target_type="project",
+            target_id=project.id,
+            status=_failure_status(exc),
+            error=exc,
+        )
+        db.commit()
+        raise HTTPException(status_code=_deepseek_http_status(exc), detail=str(exc)) from exc
     script = ScriptVersion(
         project_id=project.id,
         version=_next_script_version(db, project.id),
@@ -349,6 +452,15 @@ def create_ai_script(
     )
     project.status = ProjectStatus.script_review
     db.add(script)
+    _record_agent_run(
+        db,
+        client,
+        project_id=project.id,
+        operation="script_generation",
+        target_type="project",
+        target_id=project.id,
+        status="passed",
+    )
     db.commit()
     db.refresh(script)
     return script
@@ -371,9 +483,7 @@ def approve_script(script_id: str, db: DbSession) -> ScriptVersion:
 def list_assets(project_id: str, db: DbSession) -> list[Asset]:
     require_project(db, project_id)
     statement = (
-        select(Asset)
-        .where(Asset.project_id == project_id)
-        .order_by(Asset.asset_type, Asset.name)
+        select(Asset).where(Asset.project_id == project_id).order_by(Asset.asset_type, Asset.name)
     )
     return list(db.scalars(statement).all())
 
@@ -459,10 +569,22 @@ def extract_project_assets(project_id: str, db: DbSession) -> list[Asset]:
     )
     if script is None:
         raise HTTPException(status_code=409, detail="Approve a script before extracting assets")
+    client = DeepSeekClient()
     try:
-        draft = extract_assets(DeepSeekClient(), project, script.content)
+        draft = extract_assets(client, project, script.content)
     except DeepSeekError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _record_agent_run(
+            db,
+            client,
+            project_id=project.id,
+            operation="asset_extraction",
+            target_type="script",
+            target_id=script.id,
+            status=_failure_status(exc),
+            error=exc,
+        )
+        db.commit()
+        raise HTTPException(status_code=_deepseek_http_status(exc), detail=str(exc)) from exc
 
     existing: dict[tuple[str, str], Asset] = {}
     exact_names = {asset.name for asset in project.assets}
@@ -485,11 +607,18 @@ def extract_project_assets(project_id: str, db: DbSession) -> list[Asset]:
             exact_names.add(name)
         elif not asset.description:
             asset.description = item.description
+    _record_agent_run(
+        db,
+        client,
+        project_id=project.id,
+        operation="asset_extraction",
+        target_type="script",
+        target_id=script.id,
+        status="passed",
+    )
     db.commit()
     statement = (
-        select(Asset)
-        .where(Asset.project_id == project.id)
-        .order_by(Asset.asset_type, Asset.name)
+        select(Asset).where(Asset.project_id == project.id).order_by(Asset.asset_type, Asset.name)
     )
     return list(db.scalars(statement).all())
 
@@ -497,10 +626,32 @@ def extract_project_assets(project_id: str, db: DbSession) -> list[Asset]:
 @app.post(f"{API}/assets/{{asset_id}}/prompt/generate", response_model=AssetRead)
 def create_asset_prompt(asset_id: str, db: DbSession) -> Asset:
     asset = require_asset(db, asset_id)
+    client = DeepSeekClient()
     try:
-        asset.prompt = generate_asset_prompt(DeepSeekClient(), asset.project, asset)
+        asset.prompt = generate_asset_prompt(client, asset.project, asset)
     except DeepSeekError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        db.rollback()
+        _record_agent_run(
+            db,
+            client,
+            project_id=asset.project_id,
+            operation="asset_prompt_generation",
+            target_type="asset",
+            target_id=asset.id,
+            status=_failure_status(exc),
+            error=exc,
+        )
+        db.commit()
+        raise HTTPException(status_code=_deepseek_http_status(exc), detail=str(exc)) from exc
+    _record_agent_run(
+        db,
+        client,
+        project_id=asset.project_id,
+        operation="asset_prompt_generation",
+        target_type="asset",
+        target_id=asset.id,
+        status="passed",
+    )
     db.commit()
     db.refresh(asset)
     return asset
@@ -580,11 +731,7 @@ def create_asset_image_generation(
             status_code=409,
             detail="该图片供应商尚未配置，请填写 config.local.env 后重启服务",
         )
-    model = (
-        settings.openai_image_model
-        if payload.provider == "openai"
-        else settings.seedream_model
-    )
+    model = settings.openai_image_model if payload.provider == "openai" else settings.seedream_model
     image = AssetImage(
         asset_id=asset.id,
         provider=payload.provider,
@@ -657,45 +804,46 @@ def create_shots(script_id: str, db: DbSession) -> list[Scene]:
     if not script.is_approved:
         raise HTTPException(status_code=409, detail="Approve the script before generating shots")
     project = script.project
-    is_regeneration = bool(
-        db.scalar(
-            select(func.count(AgentRun.id)).where(
-                AgentRun.operation == "storyboard_generation",
-                AgentRun.target_id == script.id,
-            )
-        )
-    )
+    client = DeepSeekClient()
     try:
-        draft = generate_storyboard(DeepSeekClient(), project, script.content)
+        draft = generate_storyboard(client, project, script.content)
     except DeepSeekError as exc:
-        db.add(
-            AgentRun(
-                project_id=project.id,
-                operation="storyboard_generation",
-                target_type="script",
-                target_id=script.id,
-                status="request_failed",
-                validation_passed=None,
-                is_regeneration=is_regeneration,
-                error_message=str(exc),
-            )
+        _record_agent_run(
+            db,
+            client,
+            project_id=project.id,
+            operation="storyboard_generation",
+            target_type="script",
+            target_id=script.id,
+            status=_failure_status(exc),
+            error=exc,
         )
         db.commit()
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=_deepseek_http_status(exc), detail=str(exc)) from exc
 
-    validation_results = validate_storyboard(draft, script.content)
+    settings = get_settings()
+    rules_snapshot = {
+        "reference_coverage_threshold": settings.storyboard_reference_coverage_threshold,
+        "reference_match_threshold": settings.storyboard_reference_match_threshold,
+    }
+    validation_results = validate_storyboard(
+        draft,
+        script.content,
+        reference_coverage_threshold=settings.storyboard_reference_coverage_threshold,
+        reference_match_threshold=settings.storyboard_reference_match_threshold,
+    )
     validation_passed = all(item["passed"] for item in validation_results)
-    run = AgentRun(
+    run = _record_agent_run(
+        db,
+        client,
         project_id=project.id,
         operation="storyboard_generation",
         target_type="script",
         target_id=script.id,
         status="passed" if validation_passed else "validation_failed",
-        validation_passed=validation_passed,
         validation_results=validation_results,
-        is_regeneration=is_regeneration,
+        rules_snapshot=rules_snapshot,
     )
-    db.add(run)
     if not validation_passed:
         failed_labels = [item["label"] for item in validation_results if not item["passed"]]
         run.error_message = "、".join(failed_labels)
@@ -705,19 +853,20 @@ def create_shots(script_id: str, db: DbSession) -> list[Scene]:
             detail=f"分镜结果未通过校验：{'、'.join(failed_labels)}。旧分镜已保留。",
         )
 
-    existing = list(db.scalars(select(Scene).where(Scene.project_id == project.id)).all())
-    for scene in existing:
-        db.delete(scene)
-    db.flush()
-
-    created: list[Scene] = []
-    for scene_draft in draft.scenes:
-        scene_data = scene_draft.model_dump(exclude={"shots"})
-        scene = Scene(project_id=project.id, script_version_id=script.id, **scene_data)
-        for shot_draft in scene_draft.shots:
-            scene.shots.append(Shot(**shot_draft.model_dump()))
-        db.add(scene)
-        created.append(scene)
+    latest_snapshot = db.scalar(
+        select(func.max(StoryboardSnapshot.version)).where(
+            StoryboardSnapshot.project_id == project.id
+        )
+    )
+    db.add(
+        StoryboardSnapshot(
+            project_id=project.id,
+            script_version_id=script.id,
+            version=(latest_snapshot or 0) + 1,
+            payload=draft.model_dump(mode="json"),
+        )
+    )
+    _replace_storyboard(db, project, script, draft)
     project.status = ProjectStatus.shot_list_review
     db.commit()
 
@@ -728,6 +877,49 @@ def create_shots(script_id: str, db: DbSession) -> list[Scene]:
         .order_by(Scene.sequence)
     )
     return list(db.scalars(statement).all())
+
+
+@app.get(
+    f"{API}/projects/{{project_id}}/storyboard-snapshots",
+    response_model=list[StoryboardSnapshotRead],
+)
+def list_storyboard_snapshots(project_id: str, db: DbSession) -> list[StoryboardSnapshot]:
+    require_project(db, project_id)
+    return list(
+        db.scalars(
+            select(StoryboardSnapshot)
+            .where(StoryboardSnapshot.project_id == project_id)
+            .order_by(StoryboardSnapshot.version.desc())
+        ).all()
+    )
+
+
+@app.post(
+    f"{API}/storyboard-snapshots/{{snapshot_id}}/restore",
+    response_model=list[SceneRead],
+)
+def restore_storyboard_snapshot(snapshot_id: str, db: DbSession) -> list[Scene]:
+    snapshot = db.get(StoryboardSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Storyboard snapshot not found")
+    project = require_project(db, snapshot.project_id)
+    script = require_script(db, snapshot.script_version_id)
+    draft = StoryboardDraft.model_validate(snapshot.payload)
+    try:
+        _replace_storyboard(db, project, script, draft)
+        project.status = ProjectStatus.shot_list_review
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return list(
+        db.scalars(
+            select(Scene)
+            .where(Scene.project_id == project.id)
+            .options(selectinload(Scene.shots))
+            .order_by(Scene.sequence)
+        ).all()
+    )
 
 
 @app.get(
@@ -761,6 +953,7 @@ def get_agent_metrics(project_id: str, db: DbSession) -> dict:
         }
         for metric in validation_totals.values()
     ]
+    measured_latencies = [run.latency_ms for run in runs if run.latency_ms is not None]
     return {
         "total_runs": len(runs),
         "passed_runs": passed_runs,
@@ -769,6 +962,13 @@ def get_agent_metrics(project_id: str, db: DbSession) -> dict:
         "regeneration_count": sum(run.is_regeneration for run in runs),
         "validation_failed_count": sum(run.status == "validation_failed" for run in runs),
         "request_failed_count": sum(run.status == "request_failed" for run in runs),
+        "total_input_tokens": sum(run.input_tokens or 0 for run in runs),
+        "total_output_tokens": sum(run.output_tokens or 0 for run in runs),
+        "average_latency_ms": (
+            round(sum(measured_latencies) / len(measured_latencies), 1)
+            if measured_latencies
+            else 0.0
+        ),
         "validations": validations,
         "recent_runs": runs[:20],
     }
@@ -803,9 +1003,7 @@ def delete_shot(shot_id: str, db: DbSession) -> Response:
     db.delete(shot)
     db.flush()
     remaining = list(
-        db.scalars(
-            select(Shot).where(Shot.scene_id == scene_id).order_by(Shot.sequence)
-        ).all()
+        db.scalars(select(Shot).where(Shot.scene_id == scene_id).order_by(Shot.sequence)).all()
     )
     # Move through a collision-free temporary range before assigning final values.
     # SQLite can otherwise update rows out of order and violate (scene_id, sequence).
@@ -822,10 +1020,22 @@ def delete_shot(shot_id: str, db: DbSession) -> Response:
 def create_prompt(shot_id: str, db: DbSession) -> PromptVersion:
     shot = require_shot(db, shot_id)
     project = shot.scene.project
+    client = DeepSeekClient()
     try:
-        draft = generate_prompt(DeepSeekClient(), project, shot)
+        draft = generate_prompt(client, project, shot)
     except DeepSeekError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _record_agent_run(
+            db,
+            client,
+            project_id=project.id,
+            operation="shot_prompt_generation",
+            target_type="shot",
+            target_id=shot.id,
+            status=_failure_status(exc),
+            error=exc,
+        )
+        db.commit()
+        raise HTTPException(status_code=_deepseek_http_status(exc), detail=str(exc)) from exc
     latest = db.scalar(
         select(func.max(PromptVersion.version)).where(PromptVersion.shot_id == shot.id)
     )
@@ -842,6 +1052,15 @@ def create_prompt(shot_id: str, db: DbSession) -> PromptVersion:
     )
     project.status = ProjectStatus.prompt_review
     db.add(prompt)
+    _record_agent_run(
+        db,
+        client,
+        project_id=project.id,
+        operation="shot_prompt_generation",
+        target_type="shot",
+        target_id=shot.id,
+        status="passed",
+    )
     db.commit()
     db.refresh(prompt)
     return prompt
