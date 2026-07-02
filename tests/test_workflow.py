@@ -196,3 +196,21 @@ def test_schema_validation_feedback_triggers_repair_attempt():
     assert isinstance(result, AssetExtractionDraft)
     assert len(client.calls) == 2
     assert "上一次输出未通过 JSON Schema" in client.calls[1]
+
+
+def test_schema_failure_reports_exact_field_location():
+    class InvalidClient:
+        attempt_count = 0
+
+        def chat_json(self, *_):
+            return {"assets": [{"asset_type": "invalid", "name": "A"}]}
+
+    with pytest.raises(DeepSeekError) as exc_info:
+        extract_assets(
+            InvalidClient(),
+            Project(name="Invalid", visual_style="cinematic"),
+            "A enters.",
+        )
+    details = [item["detail"] for item in exc_info.value.validation_results]
+    assert any("assets.0.asset_type" in detail for detail in details)
+    assert any("assets.0.description" in detail for detail in details)

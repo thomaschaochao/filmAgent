@@ -234,6 +234,9 @@ class AgentRun(Base):
     prompt_version: Mapped[str] = mapped_column(String(64), default="v1")
     rules_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rules_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
+    user_prompt: Mapped[str] = mapped_column(Text, default="")
+    raw_response: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

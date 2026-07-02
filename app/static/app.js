@@ -139,8 +139,23 @@ function renderMetrics() {
     </div>
     <div class="metrics-layout">
       <section class="panel metrics-panel"><div class="panel-heading"><h3>各项校验通过率</h3></div>${metrics.validations.length ? `<div class="validation-list">${metrics.validations.map(item => `<div class="validation-row"><div><strong>${esc(item.label)}</strong><small>${item.passed}/${item.total} 次通过</small></div><div class="metric-progress"><i style="width:${item.pass_rate}%"></i></div><b>${item.pass_rate}%</b></div>`).join("")}</div>` : `<p class="prompt-empty">生成一次分镜后，这里会出现编号、覆盖率、引用匹配和重复镜头指标。</p>`}</section>
-      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}"><div><strong>${operationLabel[run.operation] || esc(run.operation)} · ${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")} · ${esc(run.model || "unknown model")}</small></div><span>${run.error_message ? esc(run.error_message) : `耗时 ${run.latency_ms ?? "-"}ms · Token ${(run.input_tokens || 0) + (run.output_tokens || 0)}`}</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
+      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3><small>点击任意记录查看请求与校验详情</small></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}" data-agent-run="${run.id}" role="button" tabindex="0"><div><strong>${operationLabel[run.operation] || esc(run.operation)} · ${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")} · ${esc(run.model || "unknown model")}</small></div><span>${run.error_message ? esc(run.error_message) : `耗时 ${run.latency_ms ?? "-"}ms · Token ${(run.input_tokens || 0) + (run.output_tokens || 0)}`} · 查看详情 →</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
     </div>`;
+}
+
+async function openAgentRunDetail(runId) {
+  const run = await request(`/agent-runs/${runId}`);
+  const checks = run.validation_results || [];
+  $("#agent-run-detail").innerHTML = `
+    <div class="dialog-head"><div><span class="eyebrow">REQUEST TRACE</span><h2>${esc(run.operation)} · ${esc(run.status)}</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></div>
+    <div class="run-detail-meta"><span>供应商 <strong>${esc(run.provider)}</strong></span><span>模型 <strong>${esc(run.model || "-")}</strong></span><span>耗时 <strong>${run.latency_ms ?? "-"}ms</strong></span><span>尝试 <strong>${run.attempt_count}</strong></span><span>Token <strong>${(run.input_tokens || 0) + (run.output_tokens || 0)}</strong></span><span>Request ID <strong>${esc(run.request_id || "-")}</strong></span></div>
+    <section class="run-detail-section"><h3>校验结果</h3>${checks.length ? `<div class="run-check-list">${checks.map(check => `<article class="run-check ${check.passed ? "passed" : "failed"}"><strong>${check.passed ? "✓" : "×"} ${esc(check.label)}</strong><code>${esc(check.key)}</code><p>${esc(check.detail)}</p><small>实际值：${esc(check.value)} · 门槛：${esc(check.threshold ?? "-")}</small></article>`).join("")}</div>` : `<p class="prompt-empty">本次调用没有独立业务校验项；状态由接口请求结果决定。</p>`}</section>
+    ${run.error_message ? `<section class="run-detail-section error-block"><h3>错误阶段：${esc(run.error_type || "unknown")}</h3><p>${esc(run.error_message)}</p></section>` : ""}
+    <section class="run-detail-section"><h3>System Prompt</h3><pre>${esc(run.system_prompt || "（该接口没有 system prompt）")}</pre></section>
+    <section class="run-detail-section"><h3>User Prompt / 请求正文</h3><pre>${esc(run.user_prompt || "（未记录请求正文）")}</pre></section>
+    <section class="run-detail-section"><h3>原始返回</h3><pre>${esc(run.raw_response || "（接口未返回正文）")}</pre></section>
+    <div class="dialog-actions"><button class="button" type="button" data-close-dialog>关闭</button></div>`;
+  $("#agent-run-dialog").showModal();
 }
 
 function renderProject() {
@@ -361,8 +376,10 @@ document.addEventListener("click", async event => {
   const copyLocalPathButton = event.target.closest("[data-copy-local-path]");
   const deleteShotButton = event.target.closest("[data-delete-shot]");
   const shotCard = event.target.closest("[data-shot-id]");
+  const agentRun = event.target.closest("[data-agent-run]");
   try {
-    if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
+    if (agentRun) await openAgentRunDetail(agentRun.dataset.agentRun);
+    else if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
     else if (stepButton && !stepButton.disabled) setStep(stepButton.dataset.step || stepButton.dataset.stepNext);
     else if (modeButton) { state.scriptMode = modeButton.dataset.scriptMode; renderScript(); }
     else if (versionButton) { state.script = state.scripts.find(s => s.id === versionButton.dataset.scriptId); renderScript(); }

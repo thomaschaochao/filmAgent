@@ -12,6 +12,23 @@ from app.services.deepseek import DeepSeekClient, DeepSeekError
 DraftT = TypeVar("DraftT", bound=BaseModel)
 
 
+def _schema_validation_results(error: ValidationError, operation: str) -> list[dict]:
+    results = []
+    for issue in error.errors(include_url=False):
+        location = ".".join(str(part) for part in issue.get("loc", ())) or "$"
+        results.append(
+            {
+                "key": "schema_validation",
+                "label": f"{operation}字段校验",
+                "passed": False,
+                "value": 0,
+                "threshold": 1,
+                "detail": f"字段 {location}：{issue.get('msg', '格式不正确')}",
+            }
+        )
+    return results
+
+
 def _validated_json(
     client: DeepSeekClient,
     system: str,
@@ -40,6 +57,7 @@ def _validated_json(
     raise DeepSeekError(
         f"DeepSeek {operation} output failed schema validation after repair.",
         error_type="schema_validation",
+        validation_results=_schema_validation_results(last_error, operation),
     ) from last_error
 
 
@@ -172,6 +190,20 @@ def generate_script(
         raise DeepSeekError(
             f"DeepSeek script output failed validation (minimum {minimum} characters).",
             error_type="output_validation",
+            validation_results=[
+                {
+                    "key": "script_text",
+                    "label": "剧本文本校验",
+                    "passed": False,
+                    "value": len(content),
+                    "threshold": minimum,
+                    "detail": (
+                        "返回中包含 Markdown 代码块"
+                        if "```" in content
+                        else f"返回仅 {len(content)} 字符，低于最低要求 {minimum}"
+                    ),
+                }
+            ],
         )
     return content
 
@@ -265,6 +297,20 @@ def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset
         raise DeepSeekError(
             f"DeepSeek asset prompt failed validation (minimum {minimum} characters).",
             error_type="output_validation",
+            validation_results=[
+                {
+                    "key": "asset_prompt_text",
+                    "label": "资产提示词文本校验",
+                    "passed": False,
+                    "value": len(generated),
+                    "threshold": minimum,
+                    "detail": (
+                        "返回中包含 Markdown 代码块"
+                        if "```" in generated
+                        else f"返回仅 {len(generated)} 字符，低于最低要求 {minimum}"
+                    ),
+                }
+            ],
         )
     return f"{layout_requirement}。{project_context}。{generated}"
 

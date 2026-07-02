@@ -239,6 +239,13 @@ class AgentRunRead(ORMModel):
     created_at: datetime
 
 
+class AgentRunDetailRead(AgentRunRead):
+    system_prompt: str
+    user_prompt: str
+    raw_response: str
+    rules_snapshot: dict
+
+
 class StoryboardSnapshotRead(ORMModel):
     id: str
     project_id: str

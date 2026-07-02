@@ -1,3 +1,4 @@
+import json
 import re
 import time
 import unicodedata
@@ -27,6 +28,7 @@ from app.models import (
 )
 from app.schemas import (
     AgentMetricsRead,
+    AgentRunDetailRead,
     AssetCreate,
     AssetImageGenerateRequest,
     AssetImageRead,
@@ -80,6 +82,9 @@ async def lifespan(_: FastAPI):
         "prompt_version": "VARCHAR(64) NOT NULL DEFAULT 'v1'",
         "rules_version": "VARCHAR(64)",
         "rules_snapshot": "JSON NOT NULL DEFAULT '{}'",
+        "system_prompt": "TEXT NOT NULL DEFAULT ''",
+        "user_prompt": "TEXT NOT NULL DEFAULT ''",
+        "raw_response": "TEXT NOT NULL DEFAULT ''",
     }
     with engine.begin() as connection:
         for name, definition in agent_run_migrations.items():
@@ -168,7 +173,11 @@ def _record_agent_run(
         target_id=target_id,
         status=status,
         validation_passed=status == "passed" if status != "request_failed" else None,
-        validation_results=validation_results or [],
+        validation_results=(
+            validation_results
+            if validation_results is not None
+            else getattr(error, "validation_results", [])
+        ),
         is_regeneration=bool(previous),
         error_message=str(error) if error else None,
         error_type=getattr(error, "error_type", None),
@@ -182,6 +191,9 @@ def _record_agent_run(
         prompt_version=f"{operation}-v1",
         rules_version=settings.validation_rules_version,
         rules_snapshot=rules_snapshot or {},
+        system_prompt=metadata.get("system_prompt", ""),
+        user_prompt=metadata.get("user_prompt", ""),
+        raw_response=metadata.get("raw_response", ""),
     )
     db.add(run)
     return run
@@ -299,6 +311,15 @@ def _run_asset_image_generation(image_id: str, bind) -> None:
                     attempt_count=1,
                     prompt_version="image-generation-v1",
                     rules_version=get_settings().validation_rules_version,
+                    user_prompt=image.prompt_snapshot,
+                    raw_response=(
+                        json.dumps(
+                            {"image_path": image.image_path, "model": model},
+                            ensure_ascii=False,
+                        )
+                        if not error
+                        else error
+                    ),
                 )
             )
 
@@ -1006,6 +1027,14 @@ def get_agent_metrics(project_id: str, db: DbSession) -> dict:
         "validations": validations,
         "recent_runs": runs[:20],
     }
+
+
+@app.get(f"{API}/agent-runs/{{run_id}}", response_model=AgentRunDetailRead)
+def get_agent_run_detail(run_id: str, db: DbSession) -> AgentRun:
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return run
 
 
 @app.get(f"{API}/projects/{{project_id}}/scenes", response_model=list[SceneRead])

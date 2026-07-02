@@ -9,8 +9,8 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260702-2" in response.text
-    assert "/static/styles.css?v=20260702-2" in response.text
+    assert "/static/app.js?v=20260702-3" in response.text
+    assert "/static/styles.css?v=20260702-3" in response.text
     assert "data-close-dialog" in response.text
 
     static_response = client.get("/static/styles.css")
@@ -30,6 +30,8 @@ def test_frontend_entrypoint(client):
     assert 'data-action="open-metrics"' in response.text
     assert 'data-step="metrics"' not in response.text
     assert "运行监控与 Agent 评估" in app_response.text
+    assert "agent-run-dialog" in response.text
+    assert "openAgentRunDetail" in app_response.text
 
 
 def test_project_and_script_workflow(client):
@@ -262,12 +264,30 @@ def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
         if not item["passed"]
     }
     assert {"scene_sequence", "script_reference_match"} <= failed_keys
+    detail = client.get(f"/api/v1/agent-runs/{metrics['recent_runs'][0]['id']}").json()
+    assert detail["error_message"]
+    assert any("实际编号" in check["detail"] for check in detail["validation_results"])
 
 
 def test_script_and_asset_operations_are_recorded(client, monkeypatch):
     from app.schemas import AssetDraft, AssetExtractionDraft
 
     project = client.post("/api/v1/projects", json={"name": "Metrics"}).json()
+
+    class AuditedClient:
+        def __init__(self):
+            self.attempt_count = 1
+            self.last_call = {
+                "provider": "deepseek",
+                "model": "test-model",
+                "system_prompt": "system instructions",
+                "user_prompt": "user screenplay request",
+                "raw_response": "raw generated screenplay",
+                "input_tokens": 10,
+                "output_tokens": 20,
+            }
+
+    monkeypatch.setattr("app.main.DeepSeekClient", AuditedClient)
     monkeypatch.setattr(
         "app.main.generate_script",
         lambda *args, **kwargs: (
@@ -304,3 +324,11 @@ def test_script_and_asset_operations_are_recorded(client, monkeypatch):
         "asset_extraction",
         "asset_prompt_generation",
     } <= operations
+    script_run = next(
+        run for run in metrics["recent_runs"] if run["operation"] == "script_generation"
+    )
+    detail = client.get(f"/api/v1/agent-runs/{script_run['id']}").json()
+    assert detail["system_prompt"] == "system instructions"
+    assert detail["user_prompt"] == "user screenplay request"
+    assert detail["raw_response"] == "raw generated screenplay"
+    assert detail["input_tokens"] == 10
