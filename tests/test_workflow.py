@@ -7,6 +7,7 @@ from app.services.workflow import (
     generate_asset_prompt,
     generate_prompt,
     generate_script,
+    generate_storyboard,
     storyboard_frame_count_for_duration,
     validate_storyboard,
 )
@@ -69,6 +70,76 @@ class StoryboardClient(RecordingClient):
                 for index in range(1, self.frame_count + 1)
             ],
         }
+
+
+class GeneratedStoryboardClient:
+    def __init__(self, shots: list[dict]) -> None:
+        self.shots = shots
+        self.system_prompt = ""
+
+    def chat_json(self, system_prompt: str, user_prompt: str) -> dict:
+        self.system_prompt = system_prompt
+        return {
+            "scenes": [
+                {
+                    "sequence": 1,
+                    "heading": "INT. ROOM",
+                    "shots": self.shots,
+                }
+            ]
+        }
+
+
+def generated_shot(sequence: int, **overrides) -> dict:
+    values = {
+        "sequence": sequence,
+        "script_reference": "A speaks",
+        "subject": "A",
+        "action": "speaks",
+        "environment": "room",
+        "shot_size": "medium",
+        "camera_angle": "eye level",
+        "camera_motion": "static",
+        "duration_seconds": 4.0,
+        "dialogue": "A: First line",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_storyboard_requires_explicit_varied_durations_and_preserves_dialogue_rules():
+    client = GeneratedStoryboardClient(
+        [
+            generated_shot(1, duration_seconds=2.0),
+            generated_shot(
+                2,
+                duration_seconds=12.0,
+                dialogue="A: First line\nB: Second line",
+            ),
+        ]
+    )
+    draft = generate_storyboard(
+        client,
+        Project(name="Film", visual_style="cinematic", aspect_ratio="16:9"),
+        "A speaks",
+    )
+    assert [shot.duration_seconds for shot in draft.scenes[0].shots] == [2.0, 12.0]
+    assert draft.scenes[0].shots[1].dialogue == "A: First line\nB: Second line"
+    assert "不得把所有镜头统一设为4秒" in client.system_prompt
+    assert "逐字保留" in client.system_prompt
+    assert "8至20秒长镜头" in client.system_prompt
+
+
+def test_storyboard_rejects_implicit_four_second_fallback():
+    shot = generated_shot(1)
+    shot.pop("duration_seconds")
+    client = GeneratedStoryboardClient([shot])
+    with pytest.raises(DeepSeekError, match="omitted duration_seconds"):
+        generate_storyboard(
+            client,
+            Project(name="Film", visual_style="cinematic", aspect_ratio="16:9"),
+            "A speaks",
+        )
 
 
 def test_world_setting_is_passed_to_script_generation():

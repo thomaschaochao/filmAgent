@@ -137,11 +137,20 @@ def generate_script(
 
 def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -> StoryboardDraft:
     schema_example = StoryboardDraft.model_json_schema()
+    shot_schema = schema_example.get("$defs", {}).get("ShotDraft", {})
+    required_fields = shot_schema.setdefault("required", [])
+    if "duration_seconds" not in required_fields:
+        required_fields.append("duration_seconds")
     system = (
         "你是一名电影分镜导演。把剧本拆分为场次和可独立绘制的镜头。"
         "必须输出 json 对象，不要输出 Markdown。每个镜头都要保持人物、服装、道具、空间连续性。"
+        "dialogue 必须逐字保留该镜头覆盖的全部对白，保留说话人和换行；"
+        "不得摘要、改写或只留下最后一句。"
         "每个镜头必须填写 duration_seconds，根据对白长度、动作复杂度和镜头运动估算0.5至60秒的时长；"
-        "短反应镜头通常1至3秒，单一动作通常3至6秒，复杂动作或长对白可超过6秒。"
+        "不得把所有镜头统一设为4秒。短反应镜头通常1至3秒，单一动作通常3至6秒；"
+        "完整对白、连续表演、复杂调度、空间展示或情绪停顿应使用8至20秒长镜头，必要时可更长。"
+        "对白时长按实际朗读时间估算，并额外保留表演反应与停顿；叙事允许时，每个主要场次至少考虑一个长镜头，"
+        "但不要为了满足数量强行拉长镜头。不要把一句连续对白机械切成多个4秒镜头。"
         "镜头 sequence 在每个场次内从 1 连续递增，场次 sequence 从 1 连续递增。"
         f"输出 JSON Schema：{json.dumps(schema_example, ensure_ascii=False)}"
     )
@@ -151,7 +160,18 @@ def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -
         f"剧本：\n{script}"
     )
     try:
-        return StoryboardDraft.model_validate(client.chat_json(system, user))
+        draft = StoryboardDraft.model_validate(client.chat_json(system, user))
+        missing_duration = [
+            (scene.sequence, shot.sequence)
+            for scene in draft.scenes
+            for shot in scene.shots
+            if "duration_seconds" not in shot.model_fields_set
+        ]
+        if missing_duration:
+            raise DeepSeekError(
+                f"DeepSeek omitted duration_seconds for shots: {missing_duration}"
+            )
+        return draft
     except ValidationError as exc:
         raise DeepSeekError("DeepSeek storyboard output failed schema validation.") from exc
 

@@ -23,6 +23,54 @@ def validate_base_version(expected: dict, current: dict) -> None:
         raise ChatValidationError("proposal base version conflicts with current data")
 
 
+def validate_shot_merge_operations(
+    operations: list[ProposalOperation],
+    snapshots: dict[str, dict],
+) -> None:
+    updates = [
+        operation
+        for operation in operations
+        if operation.resource == "shot" and operation.action == "update"
+    ]
+    deletes = [
+        operation
+        for operation in operations
+        if operation.resource == "shot" and operation.action == "delete"
+    ]
+    for update in updates:
+        survivor = snapshots.get(f"shot:{update.target_id}")
+        if survivor is None:
+            continue
+        merged_sources = [
+            snapshots[f"shot:{operation.target_id}"]
+            for operation in deletes
+            if snapshots.get(f"shot:{operation.target_id}", {}).get("scene_id")
+            == survivor.get("scene_id")
+        ]
+        if not merged_sources:
+            continue
+        combined_dialogue = update.values.get("dialogue", "")
+        original_dialogues = [
+            snapshot.get("dialogue", "").strip()
+            for snapshot in [survivor, *merged_sources]
+            if snapshot.get("dialogue", "").strip()
+        ]
+        missing = [line for line in original_dialogues if line not in combined_dialogue]
+        if missing:
+            raise ChatValidationError(
+                "Merged shots must preserve every original dialogue line verbatim"
+            )
+        minimum_duration = sum(
+            float(snapshot.get("duration_seconds") or 0)
+            for snapshot in [survivor, *merged_sources]
+        )
+        combined_duration = update.values.get("duration_seconds")
+        if not isinstance(combined_duration, (int, float)) or combined_duration < minimum_duration:
+            raise ChatValidationError(
+                "Merged shot duration cannot be shorter than the source shots combined"
+            )
+
+
 def generate_chat_draft(
     client: DeepSeekClient,
     *,
@@ -35,7 +83,12 @@ The object must contain `reply` and optional `proposal`. A proposal contains a s
 `summary` and non-empty `operations`. Operations may only use create, update, delete,
 reorder, or create_version with resources script, asset, shot, or prompt. Never invent
 target IDs and never operate outside the supplied scope. If no safe edit is possible,
-omit the proposal and explain why in reply."""
+omit the proposal and explain why in reply. When combining shots, update the surviving
+shot and delete the redundant shot in the same proposal. Preserve every original dialogue
+line verbatim with speaker labels and newlines; never summarize dialogue. Recalculate the
+combined duration from all dialogue, actions, pauses, and camera movement instead of using
+a fixed 4 seconds. Long continuous performances or complex blocking should normally use
+8-20 seconds when appropriate."""
     user = json.dumps(
         {
             "context": context,

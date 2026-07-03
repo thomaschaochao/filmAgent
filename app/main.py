@@ -63,6 +63,7 @@ from app.services.chat import (
     generate_chat_draft,
     validate_base_version,
     validate_operation_scope,
+    validate_shot_merge_operations,
 )
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
@@ -1146,6 +1147,10 @@ def create_chat_message(thread_id: str, payload: ChatMessageCreate, db: DbSessio
                 key = f"{operation.resource}:{operation.target_id}"
                 before[key] = snapshot
                 base[key] = snapshot
+        try:
+            validate_shot_merge_operations(proposal_draft.operations, before)
+        except ChatValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         db.add(
             ChangeProposal(
                 thread_id=thread.id,

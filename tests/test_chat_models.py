@@ -7,6 +7,7 @@ from app.services.chat import (
     ChatValidationError,
     validate_base_version,
     validate_operation_scope,
+    validate_shot_merge_operations,
 )
 
 
@@ -48,3 +49,43 @@ def test_base_version_conflicts_are_rejected():
     validate_base_version({"updated_at": "v1"}, {"updated_at": "v1"})
     with pytest.raises(ChatValidationError, match="conflicts"):
         validate_base_version({"updated_at": "v1"}, {"updated_at": "v2"})
+
+
+def test_shot_merge_requires_all_dialogue_and_combined_duration():
+    snapshots = {
+        "shot:keep": {
+            "scene_id": "scene-1",
+            "dialogue": "A: First line",
+            "duration_seconds": 4.0,
+        },
+        "shot:remove": {
+            "scene_id": "scene-1",
+            "dialogue": "B: Second line",
+            "duration_seconds": 5.0,
+        },
+    }
+    delete = ProposalOperation(action="delete", resource="shot", target_id="remove")
+    incomplete = ProposalOperation(
+        action="update",
+        resource="shot",
+        target_id="keep",
+        values={"dialogue": "B: Second line", "duration_seconds": 9.0},
+    )
+    with pytest.raises(ChatValidationError, match="every original dialogue"):
+        validate_shot_merge_operations([incomplete, delete], snapshots)
+
+    complete = incomplete.model_copy(
+        update={
+            "values": {
+                "dialogue": "A: First line\nB: Second line",
+                "duration_seconds": 9.0,
+            }
+        }
+    )
+    validate_shot_merge_operations([complete, delete], snapshots)
+
+    too_short = complete.model_copy(
+        update={"values": {**complete.values, "duration_seconds": 8.0}}
+    )
+    with pytest.raises(ChatValidationError, match="cannot be shorter"):
+        validate_shot_merge_operations([too_short, delete], snapshots)

@@ -239,6 +239,13 @@ async function loadAllPrompts() {
 function openShotDialog(shot) {
   $("#shot-form").innerHTML = `<div class="dialog-head"><div><span class="eyebrow">SHOT EDITOR</span><h2>编辑镜头 ${String(shot.sequence).padStart(2,"0")}</h2></div><button class="icon-button" type="button" data-close-dialog>×</button></div><input type="hidden" name="id" value="${shot.id}"><div class="shot-form-grid">
     <label>主体<input name="subject" value="${esc(shot.subject)}"></label><label>动作<input name="action" value="${esc(shot.action)}"></label><label class="span-2">环境<textarea name="environment" rows="2">${esc(shot.environment)}</textarea></label><label>景别<input name="shot_size" value="${esc(shot.shot_size)}"></label><label>机位角度<input name="camera_angle" value="${esc(shot.camera_angle)}"></label><label>镜头运动<input name="camera_motion" value="${esc(shot.camera_motion)}"></label><label>镜头时长（秒）<input name="duration_seconds" type="number" min="0.5" max="60" step="0.5" value="${Number(shot.duration_seconds || 4)}"></label><label>情绪<input name="emotion" value="${esc(shot.emotion)}"></label><label>光线<input name="lighting" value="${esc(shot.lighting)}"></label><label>对白<input name="dialogue" value="${esc(shot.dialogue)}"></label><label class="span-2">连续性要求<textarea name="continuity" rows="2">${esc(shot.continuity)}</textarea></label><label><input type="checkbox" name="is_locked" ${shot.is_locked ? "checked" : ""}> 锁定这个镜头</label></div><div class="dialog-actions"><button class="button danger" type="button" data-delete-shot="${shot.id}">删除镜头</button><button class="button ghost" type="button" data-close-dialog>取消</button><button class="button primary" type="submit" value="default">保存修改</button></div>`;
+  const dialogueInput = $("#shot-form [name=dialogue]");
+  const dialogueTextarea = document.createElement("textarea");
+  dialogueTextarea.name = "dialogue";
+  dialogueTextarea.rows = 4;
+  dialogueTextarea.value = shot.dialogue || "";
+  dialogueTextarea.setAttribute("aria-label", "对白（支持多句与换行）");
+  dialogueInput.replaceWith(dialogueTextarea);
   $("#shot-dialog").showModal();
 }
 
