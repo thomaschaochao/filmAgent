@@ -568,7 +568,7 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     assert len(restore.json()[0]["shots"]) == 4
 
 
-def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
+def test_storyboard_business_errors_are_repaired_and_measured(client, monkeypatch):
     from app.schemas import SceneDraft, ShotDraft, StoryboardDraft
 
     project = client.post("/api/v1/projects", json={"name": "Validation Test"}).json()
@@ -600,23 +600,22 @@ def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
     monkeypatch.setattr("app.main.generate_storyboard", lambda *args: invalid)
 
     response = client.post(f"/api/v1/scripts/{script['id']}/shots/generate")
-    assert response.status_code == 422
-    assert "场次连续编号" in response.json()["detail"]
-    assert client.get(f"/api/v1/projects/{project['id']}/scenes").json() == []
+    assert response.status_code == 200
+    assert response.json()[0]["sequence"] == 1
+    assert response.json()[0]["shots"][0]["script_reference"] == script["content"]
 
     metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
     assert metrics["total_runs"] == 1
-    assert metrics["validation_failed_count"] == 1
-    assert metrics["pass_rate"] == 0.0
+    assert metrics["validation_failed_count"] == 0
+    assert metrics["pass_rate"] == 100.0
     failed_keys = {
         item["key"]
         for item in metrics["recent_runs"][0]["validation_results"]
         if not item["passed"]
     }
-    assert {"scene_sequence", "script_reference_match"} <= failed_keys
+    assert failed_keys == set()
     detail = client.get(f"/api/v1/agent-runs/{metrics['recent_runs'][0]['id']}").json()
-    assert detail["error_message"]
-    assert any("实际编号" in check["detail"] for check in detail["validation_results"])
+    assert detail["error_message"] is None
 
 
 def test_script_and_asset_operations_are_recorded(client, monkeypatch):

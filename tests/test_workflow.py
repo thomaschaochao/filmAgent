@@ -10,6 +10,7 @@ from app.services.workflow import (
     generate_prompt,
     generate_script,
     generate_storyboard,
+    improve_storyboard_locally,
     storyboard_frame_count_for_duration,
     validate_storyboard,
 )
@@ -452,3 +453,31 @@ def test_generate_storyboard_accepts_missing_reference_after_local_repair():
     )
 
     assert draft.scenes[0].shots[0].script_reference == "A speaks"
+
+
+def test_local_storyboard_improvement_removes_duplicates_and_renumbers():
+    duplicate = ShotDraft(
+        sequence=4,
+        script_reference="invented",
+        subject="林深",
+        action="推门",
+        environment="车站",
+        shot_size="wide",
+        camera_angle="eye level",
+        camera_motion="static",
+    )
+    draft = StoryboardDraft(
+        scenes=[
+            SceneDraft(sequence=3, heading="车站", shots=[duplicate, duplicate]),
+            SceneDraft(sequence=8, heading="重复场", shots=[duplicate]),
+        ]
+    )
+
+    repaired = improve_storyboard_locally(draft, "林深推开车站大门。")
+
+    assert len(repaired.scenes) == 1
+    assert repaired.scenes[0].sequence == 1
+    assert len(repaired.scenes[0].shots) == 1
+    assert repaired.scenes[0].shots[0].sequence == 1
+    assert repaired.scenes[0].shots[0].script_reference == "林深推开车站大门。"
+    assert all(item["passed"] for item in validate_storyboard(repaired, "林深推开车站大门。"))

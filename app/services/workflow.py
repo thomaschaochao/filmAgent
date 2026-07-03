@@ -147,6 +147,32 @@ def add_local_script_references(payload: dict[str, Any], script: str) -> dict[st
     return payload
 
 
+def improve_storyboard_locally(draft: StoryboardDraft, script: str) -> StoryboardDraft:
+    """Repair deterministic storyboard issues before applying business validation."""
+    payload = add_local_script_references(draft.model_dump(mode="python"), script)
+    repaired_scenes: list[dict[str, Any]] = []
+    seen_shots: set[tuple[str, ...]] = set()
+    for scene in payload.get("scenes") or []:
+        repaired_shots: list[dict[str, Any]] = []
+        for shot in scene.get("shots") or []:
+            fingerprint = tuple(
+                _comparable_text(str(shot.get(key) or ""))
+                for key in ("script_reference", "subject", "action", "environment")
+            )
+            if fingerprint in seen_shots:
+                continue
+            seen_shots.add(fingerprint)
+            shot["sequence"] = len(repaired_shots) + 1
+            repaired_shots.append(shot)
+        if not repaired_shots:
+            continue
+        scene["sequence"] = len(repaired_scenes) + 1
+        scene["shots"] = repaired_shots
+        repaired_scenes.append(scene)
+    payload["scenes"] = repaired_scenes
+    return StoryboardDraft.model_validate(payload)
+
+
 def validate_storyboard(
     draft: StoryboardDraft,
     script: str,

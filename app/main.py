@@ -79,6 +79,7 @@ from app.services.workflow import (
     generate_prompt,
     generate_script,
     generate_storyboard,
+    improve_storyboard_locally,
     storyboard_frame_count_for_duration,
     validate_storyboard,
 )
@@ -921,6 +922,7 @@ def create_shots(script_id: str, db: DbSession) -> list[Scene]:
         raise HTTPException(status_code=_deepseek_http_status(exc), detail=str(exc)) from exc
 
     settings = get_settings()
+    draft = improve_storyboard_locally(draft, script.content)
     rules_snapshot = {
         "reference_coverage_threshold": settings.storyboard_reference_coverage_threshold,
         "reference_match_threshold": settings.storyboard_reference_match_threshold,
