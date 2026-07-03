@@ -20,6 +20,10 @@ class DeepSeekError(RuntimeError):
         self.validation_results = validation_results or []
 
 
+class DeepSeekTruncatedError(DeepSeekError):
+    pass
+
+
 class DeepSeekClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -46,6 +50,8 @@ class DeepSeekClient:
                         "DeepSeek JSON response must be an object.", error_type="json_shape"
                     )
                 return parsed
+            except DeepSeekTruncatedError:
+                raise
             except (json.JSONDecodeError, DeepSeekError) as exc:
                 last_error = exc
         raise DeepSeekError(
@@ -103,6 +109,9 @@ class DeepSeekClient:
 
         data = response.json()
         usage = data.get("usage") or {}
+        choices = data.get("choices") or []
+        choice = choices[0] if choices else {}
+        finish_reason = choice.get("finish_reason")
         self.last_call = {
             "provider": "deepseek",
             "model": data.get("model") or self.settings.deepseek_model,
@@ -111,12 +120,28 @@ class DeepSeekClient:
             "attempt_count": self.attempt_count,
             "input_tokens": usage.get("prompt_tokens"),
             "output_tokens": usage.get("completion_tokens"),
+            "finish_reason": finish_reason,
+            "max_tokens": self.settings.deepseek_max_tokens,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "raw_response": json.dumps(data, ensure_ascii=False)[:20000],
         }
+        if finish_reason == "length":
+            output_tokens = usage.get("completion_tokens")
+            raise DeepSeekTruncatedError(
+                "DeepSeek output was truncated because it reached the output token limit "
+                f"(finish_reason=length, output_tokens={output_tokens}, "
+                f"max_tokens={self.settings.deepseek_max_tokens}). Increase "
+                "FILMAGENT_DEEPSEEK_MAX_TOKENS or split the storyboard request.",
+                error_type="output_truncated",
+            )
+        if finish_reason not in (None, "stop"):
+            raise DeepSeekError(
+                f"DeepSeek stopped before completing the response (finish_reason={finish_reason}).",
+                error_type="incomplete_output",
+            )
         try:
-            content = data["choices"][0]["message"]["content"] or ""
+            content = choice["message"]["content"] or ""
             self.last_call["raw_response"] = content
             return content
         except (KeyError, IndexError, TypeError) as exc:

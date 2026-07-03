@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = 120.0
-    deepseek_max_tokens: int = 8192
+    deepseek_max_tokens: int = Field(default=32768, ge=1024, le=384000)
     validation_rules_version: str = "2026-07-p0"
     storyboard_reference_coverage_threshold: float = 0.8
     storyboard_reference_match_threshold: float = 0.7
