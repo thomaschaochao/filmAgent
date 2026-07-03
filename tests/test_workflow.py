@@ -1,9 +1,13 @@
+import pytest
+
 from app.models import Asset, Project, Shot
 from app.schemas import SceneDraft, ShotDraft, StoryboardDraft
+from app.services.deepseek import DeepSeekError
 from app.services.workflow import (
     generate_asset_prompt,
     generate_prompt,
     generate_script,
+    storyboard_frame_count_for_duration,
     validate_storyboard,
 )
 
@@ -11,18 +15,59 @@ from app.services.workflow import (
 class RecordingClient:
     def __init__(self) -> None:
         self.user_prompt = ""
+        self.system_prompt = ""
 
     def chat_text(self, system_prompt: str, user_prompt: str) -> str:
+        self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         return "generated script"
 
     def chat_json(self, system_prompt: str, user_prompt: str) -> dict:
+        self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         return {
             "positive_prompt": "cinematic airport scene",
             "negative_prompt": "",
             "model_target": "generic",
+            "subject_position": "主体位于场景指定位置，面向关键操作对象",
+            "action_constraints": "仅执行镜头中明确描述的动作，不增加位移",
+            "spatial_constraints": "身体和动作保持在场景物理边界内",
+            "camera_strategy": "机位靠近主体，以中近景清晰呈现关键动作",
             "components": {},
+        }
+
+
+class StoryboardClient(RecordingClient):
+    def __init__(self, frame_count: int) -> None:
+        super().__init__()
+        self.frame_count = frame_count
+
+    def chat_json(self, system_prompt: str, user_prompt: str) -> dict:
+        self.system_prompt = system_prompt
+        self.user_prompt = user_prompt
+        return {
+            "positive_prompt": "cinematic continuous action",
+            "negative_prompt": "blur",
+            "model_target": "generic",
+            "subject_position": "主体保持在指定位置并面向动作目标",
+            "action_constraints": "只推进给定动作，不添加额外行为",
+            "spatial_constraints": "所有动作保持在环境物理边界内",
+            "camera_strategy": "关键动作帧使用靠近主体的近景",
+            "components": {},
+            "frames": [
+                {
+                    "index": index,
+                    "phase": (
+                        "start"
+                        if index == 1
+                        else "end"
+                        if index == self.frame_count
+                        else "middle"
+                    ),
+                    "description": f"visible action state {index}",
+                }
+                for index in range(1, self.frame_count + 1)
+            ],
         }
 
 
@@ -58,6 +103,74 @@ def test_world_setting_is_passed_to_prompt_generation():
     )
     generate_prompt(client, project, shot)
     assert "1980s United States" in client.user_prompt
+    assert "首帧提示词" in client.system_prompt
+    assert "起始姿态" in client.system_prompt
+
+
+@pytest.mark.parametrize(
+    ("frame_count", "layout"), [(4, "2×2"), (6, "2×3"), (9, "3×3")]
+)
+def test_storyboard_prompt_has_exact_frames_layout_and_continuity(frame_count, layout):
+    client = StoryboardClient(frame_count)
+    project = Project(
+        name="Flight",
+        visual_style="cinematic realism",
+        aspect_ratio="16:9",
+        world_setting="modern United States",
+    )
+    project.assets.append(
+        Asset(asset_type="character", name="林深", description="pilot", prompt="fixed pilot")
+    )
+    shot = Shot(
+        sequence=1,
+        subject="林深",
+        action="walks from the terminal to the aircraft and stops",
+        environment="airport apron",
+        shot_size="wide shot",
+        camera_angle="eye level",
+        camera_motion="tracking",
+    )
+
+    result = generate_prompt(
+        client, project, shot, mode="storyboard", frame_count=frame_count
+    )
+
+    assert len(result.frames) == frame_count
+    assert [frame.index for frame in result.frames] == list(range(1, frame_count + 1))
+    assert result.frames[0].phase == "start"
+    assert result.frames[-1].phase == "end"
+    assert layout in result.positive_prompt
+    assert f"共 {frame_count} 格" in result.positive_prompt
+    assert "@林深" in result.positive_prompt
+    assert "角色漂移" in result.negative_prompt
+    assert "cinematic realism" in client.user_prompt
+    assert "modern United States" in client.user_prompt
+
+
+def test_storyboard_prompt_rejects_missing_or_misordered_frames():
+    client = StoryboardClient(4)
+    client.frame_count = 3
+    project = Project(name="Invalid", visual_style="realistic", aspect_ratio="16:9")
+    shot = Shot(
+        sequence=1,
+        subject="person",
+        action="walks",
+        environment="street",
+        shot_size="wide",
+        camera_angle="eye level",
+        camera_motion="static",
+    )
+
+    with pytest.raises(DeepSeekError, match="必须返回 4 个"):
+        generate_prompt(client, project, shot, mode="storyboard", frame_count=4)
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [(0.5, 4), (3, 4), (3.5, 6), (6, 6), (6.5, 9), (30, 9)],
+)
+def test_storyboard_frame_count_adapts_to_shot_duration(duration, expected):
+    assert storyboard_frame_count_for_duration(duration) == expected
 
 
 def test_matching_asset_is_added_as_at_reference():
@@ -83,6 +196,30 @@ def test_matching_asset_is_added_as_at_reference():
     result = generate_prompt(client, project, shot)
     assert result.positive_prompt.startswith("@林深")
     assert result.asset_references == ["@林深"]
+
+
+def test_prompt_enforces_position_action_space_and_key_action_camera():
+    client = RecordingClient()
+    project = Project(name="Cockpit", visual_style="写实", aspect_ratio="16:9")
+    shot = Shot(
+        sequence=1,
+        subject="飞行员",
+        action="右手按下航电面板上的启动按钮",
+        environment="狭窄的民航飞机驾驶舱，飞行员坐在左座",
+        shot_size="medium shot",
+        camera_angle="eye level",
+        camera_motion="static",
+    )
+
+    result = generate_prompt(client, project, shot)
+
+    assert "主体位置：" in result.positive_prompt
+    assert "动作边界：" in result.positive_prompt
+    assert "空间边界：" in result.positive_prompt
+    assert "关键动作机位：" in result.positive_prompt
+    assert "禁止添加新的动作" in client.system_prompt
+    assert "不得穿透或超出驾驶舱" in client.system_prompt
+    assert "中近景、近景或局部特写" in client.system_prompt
 
 
 def test_asset_prompts_enforce_type_specific_layouts():

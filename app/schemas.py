@@ -134,6 +134,7 @@ class ShotDraft(BaseModel):
     shot_size: str
     camera_angle: str
     camera_motion: str
+    duration_seconds: float = Field(default=4.0, ge=0.5, le=60)
     emotion: str = ""
     lighting: str = ""
     dialogue: str = ""
@@ -168,6 +169,7 @@ class ShotUpdate(BaseModel):
     shot_size: str | None = None
     camera_angle: str | None = None
     camera_motion: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0.5, le=60)
     emotion: str | None = None
     lighting: str | None = None
     dialogue: str | None = None
@@ -188,12 +190,32 @@ class SceneRead(ORMModel):
     shots: list[ShotRead]
 
 
+PromptMode = Literal["initial_frame", "storyboard"]
+StoryboardFrameCount = Literal[4, 6, 9]
+
+
+class PromptGenerateRequest(BaseModel):
+    mode: PromptMode = "initial_frame"
+    frame_count: StoryboardFrameCount | None = None
+
+
+class StoryboardFrameDraft(BaseModel):
+    index: int = Field(ge=1, le=9)
+    phase: Literal["start", "middle", "end"]
+    description: str = Field(min_length=1)
+
+
 class PromptDraft(BaseModel):
     positive_prompt: str
     negative_prompt: str = ""
     model_target: str = "generic"
+    subject_position: str = Field(min_length=1)
+    action_constraints: str = Field(min_length=1)
+    spatial_constraints: str = Field(min_length=1)
+    camera_strategy: str = Field(min_length=1)
     components: dict[str, str] = Field(default_factory=dict)
     asset_references: list[str] = Field(default_factory=list)
+    frames: list[StoryboardFrameDraft] = Field(default_factory=list)
 
 
 class PromptRead(ORMModel):

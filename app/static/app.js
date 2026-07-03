@@ -6,6 +6,7 @@ const state = {
   assetSelectionMode: false, selectedAssetIds: new Set(),
   imageProviders: [], assetImages: new Map(), imagePollTimer: null,
   metrics: null,
+  promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -19,6 +20,7 @@ const formatPromptPreview = (value = "") => String(value)
   .trim();
 const statusLabels = { DRAFT_SCRIPT: "项目草稿", SCRIPT_REVIEW: "剧本待确认", SCRIPT_APPROVED: "剧本已确认", ASSET_REVIEW: "资产整理中", SHOT_LIST_REVIEW: "分镜设计中", PROMPT_REVIEW: "提示词制作中", COMPLETED: "制作完成" };
 const assetTypeLabels = { character: "人物", location: "场景", prop: "道具" };
+const automaticFrameCount = duration => duration <= 3 ? 4 : duration <= 6 ? 6 : 9;
 
 async function request(path, options = {}) {
   const response = await fetch(`${API}${path}`, {
@@ -188,16 +190,17 @@ function renderShots() {
     <div class="section-head"><div><span class="eyebrow">DIRECTOR'S BOARD</span><h2>分镜设计</h2><p>${state.scenes.length ? `共 ${state.scenes.length} 个场次、${state.scenes.reduce((n,s)=>n+s.shots.length,0)} 个镜头。点击卡片可编辑。` : "确认剧本后，让 AI 将叙事拆解为可绘制的镜头。"}</p></div><div class="actions"><button class="button primary" data-action="generate-shots" ${approved ? "" : "disabled"}>${state.scenes.length ? "重新拆分分镜" : "AI 拆分分镜"}</button><button class="button" data-step-next="prompts" ${state.scenes.length ? "" : "disabled"}>查看提示词 →</button></div></div>
     ${!approved ? `<div class="empty-state"><div><div class="empty-state-icon">02</div><h2>需要先确认剧本</h2><p>返回剧本创作，选择一个满意版本并确认。</p><button class="button primary" data-step-next="script">返回剧本</button></div></div>` : !state.scenes.length ? `<div class="empty-state"><div><div class="empty-state-icon">◫</div><h2>导演板还是空的</h2><p>AI 会分析已确认剧本，并创建场次与镜头卡片。</p><button class="button primary" data-action="generate-shots">开始拆分分镜</button></div></div>` : state.scenes.map(scene => `
       <section class="scene"><header class="scene-head"><span class="scene-number">SCENE ${String(scene.sequence).padStart(2,"0")}</span><h3>${esc(scene.heading)}</h3><small>${esc([scene.location, scene.time_of_day].filter(Boolean).join(" · "))}</small></header><div class="shots-grid">${scene.shots.map(shot => `
-        <article class="panel shot-card ${shot.is_locked ? "locked" : ""}" data-shot-id="${shot.id}"><div class="shot-top"><span class="shot-id">SHOT ${String(shot.sequence).padStart(2,"0")}</span><div class="shot-tags"><span>${esc(shot.shot_size)}</span><span>${esc(shot.camera_angle)}</span></div></div><h4>${esc(shot.subject)}</h4><p>${esc(shot.action)}</p><div class="shot-footer"><span>${esc(shot.camera_motion)}</span><span>${shot.is_locked ? "● 已锁定" : "编辑镜头 ↗"}</span></div></article>`).join("")}</div></section>`).join("")}`;
+        <article class="panel shot-card ${shot.is_locked ? "locked" : ""}" data-shot-id="${shot.id}"><div class="shot-top"><span class="shot-id">SHOT ${String(shot.sequence).padStart(2,"0")}</span><div class="shot-tags"><span>${esc(shot.shot_size)}</span><span>${esc(shot.camera_angle)}</span><span>${Number(shot.duration_seconds || 4).toFixed(1)}s</span></div></div><h4>${esc(shot.subject)}</h4><p>${esc(shot.action)}</p><div class="shot-footer"><span>${esc(shot.camera_motion)}</span><span>${shot.is_locked ? "● 已锁定" : "编辑镜头 ↗"}</span></div></article>`).join("")}</div></section>`).join("")}`;
 }
 
 function renderPrompts() {
   if (!state.project) return renderProject();
   const shots = state.scenes.flatMap(scene => scene.shots.map(shot => ({ ...shot, scene })));
   $("#content").innerHTML = `
-    <div class="section-head"><div><span class="eyebrow">PROMPT LAB</span><h2>故事板提示词</h2><p>按镜头生成适配图像模型的正向、负向提示词，并保留历史版本。</p></div><div class="actions"><button class="button" data-step-next="shots">← 返回分镜</button>${shots.length ? `<button class="button primary" data-action="generate-all-prompts">一键生成全部提示词</button>` : ""}</div></div>
+    <div class="section-head"><div><span class="eyebrow">PROMPT LAB</span><h2>镜头提示词</h2><p>首帧模式用于视频起始画面；故事板模式在一张图中展示镜头从开始到结束的连续帧。</p></div><div class="actions"><button class="button" data-step-next="shots">← 返回分镜</button>${shots.length ? `<button class="button primary" data-action="generate-all-prompts">一键生成全部提示词</button>` : ""}</div></div>
+    ${shots.length ? `<section class="panel prompt-mode-panel"><div><span class="eyebrow">PAGE DEFAULT</span><strong>页面默认生成模式</strong></div><div class="mode-tabs"><button class="mode-tab ${state.promptMode === "initial_frame" ? "active" : ""}" data-prompt-default-mode="initial_frame">视频首帧</button><button class="mode-tab ${state.promptMode === "storyboard" ? "active" : ""}" data-prompt-default-mode="storyboard">连续帧故事板</button></div><label class="prompt-frame-select">故事板帧数<select data-prompt-default-frames ${state.promptMode === "storyboard" ? "" : "disabled"}><option value="auto" ${state.promptFrameCount === null ? "selected" : ""}>自动 · 按镜头时长</option><option value="4" ${state.promptFrameCount === 4 ? "selected" : ""}>4 帧 · 2×2</option><option value="6" ${state.promptFrameCount === 6 ? "selected" : ""}>6 帧 · 2×3</option><option value="9" ${state.promptFrameCount === 9 ? "selected" : ""}>9 帧 · 3×3</option></select></label></section>` : ""}
     ${!shots.length ? `<div class="empty-state"><div><div class="empty-state-icon">03</div><h2>还没有可用镜头</h2><p>先完成分镜拆分，再为每个镜头生成提示词。</p><button class="button primary" data-step-next="shots">前往分镜设计</button></div></div>` : `<div class="prompt-list">${shots.map((shot, index) => { const versions = state.prompts.get(shot.id) || []; const prompt = versions[0]; return `
-      <article class="panel prompt-card"><div class="prompt-shot"><span class="shot-id">${esc(shot.scene.heading)} · SHOT ${String(shot.sequence).padStart(2,"0")}</span><h3>${esc(shot.subject)}</h3><p>${esc(shot.action)}</p></div><div class="prompt-body">${prompt ? `<label>POSITIVE PROMPT · V${prompt.version}</label><div class="prompt-text">${esc(prompt.positive_prompt)}</div>${prompt.negative_prompt ? `<label>NEGATIVE PROMPT</label><div class="prompt-text negative">${esc(prompt.negative_prompt)}</div>` : ""}` : `<div class="prompt-empty">这个镜头尚未生成提示词。</div>`}</div><div>${prompt ? `<button class="button copy-button" data-copy="${index}">复制</button>` : `<button class="button primary" data-generate-prompt="${shot.id}">生成提示词</button>`}</div></article>`; }).join("")}</div>`}`;
+      ${(() => { const metadata = prompt?.prompt_metadata || {}; const promptMode = metadata.mode || "initial_frame"; const frames = metadata.frames || []; const override = state.promptOverrides.get(shot.id) || { mode: "default", frame_count: "inherit" }; const effectiveMode = override.mode === "default" ? state.promptMode : override.mode; const frameControlEnabled = effectiveMode === "storyboard"; const effectiveFrameCount = override.frame_count === "inherit" ? state.promptFrameCount : override.frame_count; const autoFrames = automaticFrameCount(Number(shot.duration_seconds || 4)); return `<article class="panel prompt-card"><div class="prompt-shot"><span class="shot-id">${esc(shot.scene.heading)} · SHOT ${String(shot.sequence).padStart(2,"0")} · ${Number(shot.duration_seconds || 4).toFixed(1)}s</span><h3>${esc(shot.subject)}</h3><p>${esc(shot.action)}</p><div class="shot-prompt-options"><label>本镜头模式<select data-shot-prompt-mode="${shot.id}"><option value="default" ${override.mode === "default" ? "selected" : ""}>跟随页面</option><option value="initial_frame" ${override.mode === "initial_frame" ? "selected" : ""}>视频首帧</option><option value="storyboard" ${override.mode === "storyboard" ? "selected" : ""}>连续帧故事板</option></select></label><label>帧数<select data-shot-frame-count="${shot.id}" ${frameControlEnabled ? "" : "disabled"}><option value="inherit" ${override.frame_count === "inherit" ? "selected" : ""}>跟随页面</option><option value="auto" ${override.frame_count === null ? "selected" : ""}>自动 ${autoFrames}</option><option value="4" ${override.frame_count === 4 ? "selected" : ""}>4</option><option value="6" ${override.frame_count === 6 ? "selected" : ""}>6</option><option value="9" ${override.frame_count === 9 ? "selected" : ""}>9</option></select></label></div></div><div class="prompt-body">${prompt ? `<label>${promptMode === "storyboard" ? `STORYBOARD · ${metadata.frame_count || frames.length} FRAMES · ${esc(metadata.layout || "")} · ${metadata.frame_count_source === "duration_auto" ? "AUTO" : "MANUAL"}` : "INITIAL FRAME"} · V${prompt.version}</label><div class="prompt-text">${esc(prompt.positive_prompt)}</div>${frames.length ? `<details class="storyboard-frames"><summary>查看 ${frames.length} 个连续帧</summary>${frames.map(frame => `<div class="storyboard-frame"><div><strong>FRAME ${frame.index} · ${esc(frame.phase)}</strong><p>${esc(frame.description)}</p></div><button class="button" data-copy-frame="${shot.id}" data-frame-index="${frame.index}">复制此帧</button></div>`).join("")}</details>` : ""}${prompt.negative_prompt ? `<label>NEGATIVE PROMPT</label><div class="prompt-text negative">${esc(prompt.negative_prompt)}</div>` : ""}` : `<div class="prompt-empty">这个镜头尚未生成提示词。</div>`}</div><div class="prompt-card-actions">${prompt ? `<button class="button copy-button" data-copy-prompt="${shot.id}">${promptMode === "storyboard" ? "复制整版" : "复制首帧"}</button>` : ""}<button class="button ${prompt ? "" : "primary"}" data-generate-prompt="${shot.id}">${prompt ? "重新生成" : "生成提示词"}</button></div></article>`; })()}`; }).join("")}</div>`}`;
   window.currentPromptShots = shots;
 }
 
@@ -218,6 +221,7 @@ async function selectProject(id) {
   state.script = state.scripts[0] || null;
   state.metrics = null;
   state.prompts.clear();
+  state.promptOverrides.clear();
   state.assetSelectionMode = false;
   state.selectedAssetIds.clear();
   render();
@@ -230,7 +234,7 @@ async function loadAllPrompts() {
 
 function openShotDialog(shot) {
   $("#shot-form").innerHTML = `<div class="dialog-head"><div><span class="eyebrow">SHOT EDITOR</span><h2>编辑镜头 ${String(shot.sequence).padStart(2,"0")}</h2></div><button class="icon-button" type="button" data-close-dialog>×</button></div><input type="hidden" name="id" value="${shot.id}"><div class="shot-form-grid">
-    <label>主体<input name="subject" value="${esc(shot.subject)}"></label><label>动作<input name="action" value="${esc(shot.action)}"></label><label class="span-2">环境<textarea name="environment" rows="2">${esc(shot.environment)}</textarea></label><label>景别<input name="shot_size" value="${esc(shot.shot_size)}"></label><label>机位角度<input name="camera_angle" value="${esc(shot.camera_angle)}"></label><label>镜头运动<input name="camera_motion" value="${esc(shot.camera_motion)}"></label><label>情绪<input name="emotion" value="${esc(shot.emotion)}"></label><label>光线<input name="lighting" value="${esc(shot.lighting)}"></label><label>对白<input name="dialogue" value="${esc(shot.dialogue)}"></label><label class="span-2">连续性要求<textarea name="continuity" rows="2">${esc(shot.continuity)}</textarea></label><label><input type="checkbox" name="is_locked" ${shot.is_locked ? "checked" : ""}> 锁定这个镜头</label></div><div class="dialog-actions"><button class="button danger" type="button" data-delete-shot="${shot.id}">删除镜头</button><button class="button ghost" type="button" data-close-dialog>取消</button><button class="button primary" type="submit" value="default">保存修改</button></div>`;
+    <label>主体<input name="subject" value="${esc(shot.subject)}"></label><label>动作<input name="action" value="${esc(shot.action)}"></label><label class="span-2">环境<textarea name="environment" rows="2">${esc(shot.environment)}</textarea></label><label>景别<input name="shot_size" value="${esc(shot.shot_size)}"></label><label>机位角度<input name="camera_angle" value="${esc(shot.camera_angle)}"></label><label>镜头运动<input name="camera_motion" value="${esc(shot.camera_motion)}"></label><label>镜头时长（秒）<input name="duration_seconds" type="number" min="0.5" max="60" step="0.5" value="${Number(shot.duration_seconds || 4)}"></label><label>情绪<input name="emotion" value="${esc(shot.emotion)}"></label><label>光线<input name="lighting" value="${esc(shot.lighting)}"></label><label>对白<input name="dialogue" value="${esc(shot.dialogue)}"></label><label class="span-2">连续性要求<textarea name="continuity" rows="2">${esc(shot.continuity)}</textarea></label><label><input type="checkbox" name="is_locked" ${shot.is_locked ? "checked" : ""}> 锁定这个镜头</label></div><div class="dialog-actions"><button class="button danger" type="button" data-delete-shot="${shot.id}">删除镜头</button><button class="button ghost" type="button" data-close-dialog>取消</button><button class="button primary" type="submit" value="default">保存修改</button></div>`;
   $("#shot-dialog").showModal();
 }
 
@@ -356,6 +360,10 @@ document.addEventListener("click", async event => {
   const deleteAssetImageButton = event.target.closest("[data-delete-asset-image]");
   const retryImageButton = event.target.closest("[data-retry-image]");
   const copyLocalPathButton = event.target.closest("[data-copy-local-path]");
+  const promptDefaultModeButton = event.target.closest("[data-prompt-default-mode]");
+  const generatePromptButton = event.target.closest("[data-generate-prompt]");
+  const copyPromptButton = event.target.closest("[data-copy-prompt]");
+  const copyFrameButton = event.target.closest("[data-copy-frame]");
   const deleteShotButton = event.target.closest("[data-delete-shot]");
   const shotCard = event.target.closest("[data-shot-id]");
   try {
@@ -417,10 +425,19 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "generate-shots") await generateShots();
     else if (actionButton?.dataset.action === "refresh-metrics") await setStep("metrics");
     else if (actionButton?.dataset.action === "generate-all-prompts") await generateAllPrompts();
-    else if (event.target.closest("[data-generate-prompt]")) await generatePrompt(event.target.closest("[data-generate-prompt]").dataset.generatePrompt);
-    else if (event.target.closest("[data-copy]")) {
-      const shot = window.currentPromptShots[Number(event.target.closest("[data-copy]").dataset.copy)];
-      await navigator.clipboard.writeText(state.prompts.get(shot.id)[0].positive_prompt); toast("提示词已复制");
+    else if (promptDefaultModeButton) {
+      state.promptMode = promptDefaultModeButton.dataset.promptDefaultMode;
+      renderPrompts();
+    }
+    else if (generatePromptButton) await generatePrompt(generatePromptButton.dataset.generatePrompt);
+    else if (copyPromptButton) {
+      const prompt = (state.prompts.get(copyPromptButton.dataset.copyPrompt) || [])[0];
+      if (prompt) { await navigator.clipboard.writeText(prompt.positive_prompt); toast("提示词已复制"); }
+    }
+    else if (copyFrameButton) {
+      const prompt = (state.prompts.get(copyFrameButton.dataset.copyFrame) || [])[0];
+      const frame = (prompt?.prompt_metadata?.frames || []).find(item => item.index === Number(copyFrameButton.dataset.frameIndex));
+      if (frame) { await navigator.clipboard.writeText(frame.description); toast(`第 ${frame.index} 帧描述已复制`); }
     }
   } catch (error) { loading(false); toast(error.message, "error"); }
 });
@@ -503,6 +520,26 @@ $("#copy-previewed-asset-prompt").addEventListener("click", async () => {
 });
 
 document.addEventListener("change", async event => {
+  const defaultFrames = event.target.closest("[data-prompt-default-frames]");
+  if (defaultFrames) {
+    state.promptFrameCount = defaultFrames.value === "auto" ? null : Number(defaultFrames.value);
+    renderPrompts();
+    return;
+  }
+  const shotPromptMode = event.target.closest("[data-shot-prompt-mode]");
+  if (shotPromptMode) {
+    const existing = state.promptOverrides.get(shotPromptMode.dataset.shotPromptMode) || { frame_count: "inherit" };
+    state.promptOverrides.set(shotPromptMode.dataset.shotPromptMode, { ...existing, mode: shotPromptMode.value });
+    renderPrompts();
+    return;
+  }
+  const shotFrameCount = event.target.closest("[data-shot-frame-count]");
+  if (shotFrameCount) {
+    const existing = state.promptOverrides.get(shotFrameCount.dataset.shotFrameCount) || { mode: "storyboard" };
+    state.promptOverrides.set(shotFrameCount.dataset.shotFrameCount, { ...existing, frame_count: shotFrameCount.value === "inherit" ? "inherit" : shotFrameCount.value === "auto" ? null : Number(shotFrameCount.value) });
+    renderPrompts();
+    return;
+  }
   const selection = event.target.closest("[data-select-asset]");
   if (selection) {
     if (selection.checked) state.selectedAssetIds.add(selection.dataset.selectAsset);
@@ -529,7 +566,7 @@ document.addEventListener("change", async event => {
 
 $("#shot-form").addEventListener("submit", async event => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget); const id = form.get("id"); const payload = Object.fromEntries(form); delete payload.id; payload.is_locked = form.has("is_locked");
+  const form = new FormData(event.currentTarget); const id = form.get("id"); const payload = Object.fromEntries(form); delete payload.id; payload.is_locked = form.has("is_locked"); payload.duration_seconds = Number(payload.duration_seconds);
   try { await request(`/shots/${id}`, { method: "PATCH", body: JSON.stringify(payload) }); $("#shot-dialog").close(); state.scenes = await request(`/projects/${state.project.id}/scenes`); renderShots(); toast("镜头修改已保存"); } catch (error) { toast(error.message, "error"); }
 });
 
@@ -644,8 +681,15 @@ async function deleteSelectedAssets() {
 }
 
 async function generatePrompt(shotId) {
-  loading(true, "AI 正在设计提示词", "正在组合角色、构图、光线与视觉风格");
-  await request(`/shots/${shotId}/prompts/generate`, { method: "POST" }); state.prompts.set(shotId, await request(`/shots/${shotId}/prompts`)); loading(false); renderPrompts(); toast("提示词已生成");
+  const override = state.promptOverrides.get(shotId) || { mode: "default", frame_count: "inherit" };
+  const mode = override.mode === "default" ? state.promptMode : override.mode;
+  const frameCount = override.frame_count === "inherit" ? state.promptFrameCount : override.frame_count;
+  const shot = state.scenes.flatMap(scene => scene.shots).find(item => item.id === shotId);
+  const resolvedFrames = frameCount ?? automaticFrameCount(Number(shot?.duration_seconds || 4));
+  loading(true, mode === "storyboard" ? "AI 正在设计连续帧故事板" : "AI 正在设计视频首帧", mode === "storyboard" ? `镜头 ${Number(shot?.duration_seconds || 4).toFixed(1)} 秒，将规划 ${resolvedFrames} 个连续画面` : "正在组合起始姿态、构图、光线与视觉风格");
+  await request(`/shots/${shotId}/prompts/generate`, { method: "POST", body: JSON.stringify({ mode, frame_count: frameCount }) });
+  state.prompts.set(shotId, await request(`/shots/${shotId}/prompts`));
+  loading(false); renderPrompts(); toast(mode === "storyboard" ? `${frameCount} 帧故事板提示词已生成` : "首帧提示词已生成");
 }
 
 async function generateAllPrompts() {
@@ -658,7 +702,7 @@ async function generateAllPrompts() {
     const shot = shots[index];
     $("#loading-title").textContent = `正在生成提示词 ${index + 1}/${shots.length}`;
     try {
-      const prompt = await request(`/shots/${shot.id}/prompts/generate`, { method: "POST" });
+      const prompt = await request(`/shots/${shot.id}/prompts/generate`, { method: "POST", body: JSON.stringify({ mode: state.promptMode, frame_count: state.promptFrameCount }) });
       state.prompts.set(shot.id, [prompt, ...(state.prompts.get(shot.id) || [])]);
     } catch (error) {
       failed.push(`镜头 ${shot.sequence}: ${error.message}`);

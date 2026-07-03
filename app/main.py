@@ -34,6 +34,7 @@ from app.schemas import (
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
+    PromptGenerateRequest,
     PromptRead,
     SceneRead,
     ScriptCreate,
@@ -50,6 +51,7 @@ from app.services.workflow import (
     generate_prompt,
     generate_script,
     generate_storyboard,
+    storyboard_frame_count_for_duration,
     validate_storyboard,
 )
 
@@ -62,6 +64,12 @@ async def lifespan(_: FastAPI):
         with engine.begin() as connection:
             connection.execute(
                 text("ALTER TABLE projects ADD COLUMN world_setting TEXT NOT NULL DEFAULT ''")
+            )
+    shot_columns = {column["name"] for column in inspect(engine).get_columns("shots")}
+    if "duration_seconds" not in shot_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE shots ADD COLUMN duration_seconds FLOAT NOT NULL DEFAULT 4.0")
             )
     yield
 
@@ -819,11 +827,27 @@ def delete_shot(shot_id: str, db: DbSession) -> Response:
 
 
 @app.post(f"{API}/shots/{{shot_id}}/prompts/generate", response_model=PromptRead)
-def create_prompt(shot_id: str, db: DbSession) -> PromptVersion:
+def create_prompt(
+    shot_id: str,
+    db: DbSession,
+    payload: PromptGenerateRequest | None = None,
+) -> PromptVersion:
     shot = require_shot(db, shot_id)
     project = shot.scene.project
+    request = payload or PromptGenerateRequest()
+    resolved_frame_count = (
+        request.frame_count
+        if request.frame_count is not None
+        else storyboard_frame_count_for_duration(shot.duration_seconds)
+    )
     try:
-        draft = generate_prompt(DeepSeekClient(), project, shot)
+        draft = generate_prompt(
+            DeepSeekClient(),
+            project,
+            shot,
+            mode=request.mode,
+            frame_count=resolved_frame_count,
+        )
     except DeepSeekError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     latest = db.scalar(
@@ -838,6 +862,22 @@ def create_prompt(shot_id: str, db: DbSession) -> PromptVersion:
         prompt_metadata={
             "components": draft.components,
             "asset_references": draft.asset_references,
+            "subject_position": draft.subject_position,
+            "action_constraints": draft.action_constraints,
+            "spatial_constraints": draft.spatial_constraints,
+            "camera_strategy": draft.camera_strategy,
+            "mode": request.mode,
+            "frame_count": resolved_frame_count if request.mode == "storyboard" else None,
+            "frame_count_source": (
+                "manual" if request.frame_count is not None else "duration_auto"
+            ) if request.mode == "storyboard" else None,
+            "shot_duration_seconds": shot.duration_seconds,
+            "layout": (
+                {4: "2x2", 6: "2x3", 9: "3x3"}[resolved_frame_count]
+                if request.mode == "storyboard"
+                else None
+            ),
+            "frames": [frame.model_dump() for frame in draft.frames],
         },
     )
     project.status = ProjectStatus.prompt_review

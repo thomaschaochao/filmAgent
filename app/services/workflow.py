@@ -5,7 +5,13 @@ import unicodedata
 from pydantic import ValidationError
 
 from app.models import Asset, Project, Shot
-from app.schemas import AssetExtractionDraft, PromptDraft, StoryboardDraft
+from app.schemas import (
+    AssetExtractionDraft,
+    PromptDraft,
+    PromptMode,
+    StoryboardDraft,
+    StoryboardFrameCount,
+)
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 
 
@@ -134,6 +140,8 @@ def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -
     system = (
         "你是一名电影分镜导演。把剧本拆分为场次和可独立绘制的镜头。"
         "必须输出 json 对象，不要输出 Markdown。每个镜头都要保持人物、服装、道具、空间连续性。"
+        "每个镜头必须填写 duration_seconds，根据对白长度、动作复杂度和镜头运动估算0.5至60秒的时长；"
+        "短反应镜头通常1至3秒，单一动作通常3至6秒，复杂动作或长对白可超过6秒。"
         "镜头 sequence 在每个场次内从 1 连续递增，场次 sequence 从 1 连续递增。"
         f"输出 JSON Schema：{json.dumps(schema_example, ensure_ascii=False)}"
     )
@@ -146,6 +154,14 @@ def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -
         return StoryboardDraft.model_validate(client.chat_json(system, user))
     except ValidationError as exc:
         raise DeepSeekError("DeepSeek storyboard output failed schema validation.") from exc
+
+
+def storyboard_frame_count_for_duration(duration_seconds: float) -> StoryboardFrameCount:
+    if duration_seconds <= 3:
+        return 4
+    if duration_seconds <= 6:
+        return 6
+    return 9
 
 
 def extract_assets(
@@ -222,12 +238,44 @@ def generate_asset_prompt(client: DeepSeekClient, project: Project, asset: Asset
     return f"{layout_requirement}。{project_context}。{generated}"
 
 
-def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> PromptDraft:
+def generate_prompt(
+    client: DeepSeekClient,
+    project: Project,
+    shot: Shot,
+    *,
+    mode: PromptMode = "initial_frame",
+    frame_count: StoryboardFrameCount = 6,
+) -> PromptDraft:
     schema_example = PromptDraft.model_json_schema()
+    duration_seconds = shot.duration_seconds or 4.0
+    layouts = {4: "2×2", 6: "2×3", 9: "3×3"}
+    if mode == "storyboard":
+        mode_instruction = (
+            f"生成一张 {layouts[frame_count]} 网格、共 {frame_count} 格的连续帧故事板提示词。"
+            "frames 必须严格按从左到右、从上到下排列，index 从 1 连续编号；"
+            "第一帧 phase=start 且表现镜头起始状态，最后一帧 phase=end 且表现镜头结束状态，"
+            "其余帧 phase=middle 并均匀推进人物动作与镜头运动。每帧必须有可见差异，"
+            "同时保持人物身份、服装、道具、场景结构、光线、画风和空间轴线完全连续。"
+            "positive_prompt 描述整版共用的视觉要求；frames 描述每一格的具体画面。"
+        )
+    else:
+        mode_instruction = (
+            "生成用于视频生成的首帧提示词。只表现镜头动作开始前或开始瞬间的单张画面；"
+            "人物使用起始姿态，镜头运动使用初始机位，不得描述动作完成后的状态或连续时间过程。"
+            "frames 必须返回空数组。"
+        )
     system = (
-        "你是一名故事板图片提示词设计师。根据结构化镜头生成单帧故事板提示词。"
+        "你是一名影视镜头图片提示词设计师。"
+        f"{mode_instruction}"
         "必须输出 json 对象，不要输出 Markdown。positive_prompt 应明确人物、动作、环境、"
-        "构图、机位、光线、情绪、风格和画幅；不要描述无法在单帧中表现的时间过程。"
+        "构图、机位、光线、情绪、项目风格和画幅。"
+        "subject_position 必须明确主体在场景内的具体位置、朝向、坐姿或站姿及其与关键物体的关系；"
+        "action_constraints 必须把动作限制在 shot.action 明确要求的范围内，禁止添加新的动作、"
+        "位移、转身、离座、奔跑或交互；spatial_constraints 必须描述场景的物理边界和可活动范围，"
+        "人物身体、四肢、道具和动作不得穿透或超出驾驶舱、车厢、电梯、房间等封闭空间，"
+        "动作幅度必须符合空间尺寸和人体工学；camera_strategy 必须说明如何让关键动作清晰可读，"
+        "关键动作或手部操作应使用靠近人物的中近景、近景或局部特写，同时保持轴线、视线和空间关系。"
+        "不得为了画面更戏剧化而扩大动作幅度或改变人物位置。"
         "如果 asset_catalog 中的资产出现在镜头中，必须原样使用其 @引用名称。"
         f"输出 JSON Schema：{json.dumps(schema_example, ensure_ascii=False)}"
     )
@@ -236,6 +284,9 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
             "visual_style": project.visual_style,
             "aspect_ratio": project.aspect_ratio,
             "world_setting": project.world_setting,
+            "prompt_mode": mode,
+            "storyboard_frame_count": frame_count if mode == "storyboard" else None,
+            "storyboard_layout": layouts[frame_count] if mode == "storyboard" else None,
             "asset_catalog": [
                 {
                     "reference": f"@{asset.name}",
@@ -252,6 +303,19 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
             "shot_size": shot.shot_size,
             "camera_angle": shot.camera_angle,
             "camera_motion": shot.camera_motion,
+            "duration_seconds": duration_seconds,
+            "hard_requirements": {
+                "subject_position": "明确主体在 environment 内的位置、朝向、姿态和相对物体关系",
+                "action_scope": "只允许 action 中明确描述的动作，不得自行增加动作或位移",
+                "environment_boundary": (
+                    "主体和动作必须完全位于 environment 的合理物理边界内；"
+                    "封闭空间内禁止离座、穿透、伸出舱体或超出可活动范围，除非 action 明确要求"
+                ),
+                "key_action_camera": (
+                    "关键动作必须在画面中清晰可见；机位靠近主体或动作部位，"
+                    "使用中近景、近景或局部特写，并保持轴线和空间连续"
+                ),
+            },
             "emotion": shot.emotion,
             "lighting": shot.lighting,
             "continuity": shot.continuity,
@@ -260,6 +324,20 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
     )
     try:
         draft = PromptDraft.model_validate(client.chat_json(system, user))
+        if mode == "storyboard":
+            expected_indices = list(range(1, frame_count + 1))
+            actual_indices = [frame.index for frame in draft.frames]
+            if len(draft.frames) != frame_count or actual_indices != expected_indices:
+                raise ValueError(
+                    f"故事板必须返回 {frame_count} 个按 1 至 {frame_count} 连续编号的画面"
+                )
+            phases = [frame.phase for frame in draft.frames]
+            if phases[0] != "start" or phases[-1] != "end" or any(
+                phase != "middle" for phase in phases[1:-1]
+            ):
+                raise ValueError("故事板首帧、过渡帧和尾帧的阶段标记不正确")
+        else:
+            draft = draft.model_copy(update={"frames": []})
         shot_text = " ".join(
             value or ""
             for value in [
@@ -278,11 +356,41 @@ def generate_prompt(client: DeepSeekClient, project: Project, shot: Shot) -> Pro
         positive_prompt = (
             f"{prefix}, {draft.positive_prompt}" if prefix else draft.positive_prompt
         )
+        hard_constraints = (
+            f"主体位置：{draft.subject_position}；"
+            f"动作边界：{draft.action_constraints}；"
+            f"空间边界：{draft.spatial_constraints}；"
+            f"关键动作机位：{draft.camera_strategy}。"
+        )
+        positive_prompt = f"{positive_prompt}。{hard_constraints}"
+        negative_prompt = draft.negative_prompt
+        if mode == "storyboard":
+            frame_lines = "；".join(
+                f"第{frame.index}格（{frame.phase}）：{frame.description}"
+                for frame in draft.frames
+            )
+            positive_prompt = (
+                f"镜头时长 {duration_seconds:g} 秒，{layouts[frame_count]} 连续帧故事板，"
+                f"共 {frame_count} 格，"
+                f"从左到右、从上到下阅读。{positive_prompt}。{frame_lines}。"
+                "所有格保持角色、服装、道具、场景、光线、画风和空间轴线一致。"
+            )
+            storyboard_negatives = (
+                "缺帧，多余格子，重复画面，错误顺序，不规则网格，角色漂移，服装变化，"
+                "场景结构变化，轴线跳跃，人物位置漂移，额外动作，动作幅度过大，"
+                "离开指定位置，超出场景边界，穿透舱体或家具，文字，字幕，编号，水印"
+            )
+            negative_prompt = (
+                f"{draft.negative_prompt}, {storyboard_negatives}"
+                if draft.negative_prompt
+                else storyboard_negatives
+            )
         return draft.model_copy(
             update={
                 "positive_prompt": positive_prompt,
+                "negative_prompt": negative_prompt,
                 "asset_references": references,
             }
         )
-    except ValidationError as exc:
-        raise DeepSeekError("DeepSeek prompt output failed schema validation.") from exc
+    except (ValidationError, ValueError) as exc:
+        raise DeepSeekError(f"DeepSeek prompt output failed validation: {exc}") from exc

@@ -9,8 +9,8 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260702-1" in response.text
-    assert "/static/styles.css?v=20260702-1" in response.text
+    assert "/static/app.js?v=20260702-3" in response.text
+    assert "/static/styles.css?v=20260702-3" in response.text
     assert "data-close-dialog" in response.text
 
     static_response = client.get("/static/styles.css")
@@ -28,6 +28,9 @@ def test_frontend_entrypoint(client):
     assert "data-delete-shot" in app_response.text
     assert "Agent 评估" in response.text
     assert "renderMetrics" in app_response.text
+    assert "data-prompt-default-mode" in app_response.text
+    assert "data-shot-prompt-mode" in app_response.text
+    assert "data-copy-frame" in app_response.text
 
 
 def test_project_and_script_workflow(client):
@@ -125,7 +128,13 @@ def test_asset_crud_and_reference_image_upload(client):
 
 
 def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
-    from app.schemas import PromptDraft, SceneDraft, ShotDraft, StoryboardDraft
+    from app.schemas import (
+        PromptDraft,
+        SceneDraft,
+        ShotDraft,
+        StoryboardDraft,
+        StoryboardFrameDraft,
+    )
 
     project = client.post("/api/v1/projects", json={"name": "Shot Test"}).json()
     script = client.post(
@@ -189,12 +198,90 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
 
     monkeypatch.setattr(
         "app.main.generate_prompt",
-        lambda *args: PromptDraft(positive_prompt="existing prompt"),
+        lambda *args, **kwargs: PromptDraft(
+            positive_prompt="existing prompt",
+            subject_position="at mark",
+            action_constraints="only specified action",
+            spatial_constraints="inside environment",
+            camera_strategy="close on key action",
+        ),
     )
     prompt_response = client.post(
         f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate"
     )
     assert prompt_response.status_code == 200
+    assert prompt_response.json()["prompt_metadata"]["mode"] == "initial_frame"
+
+    frames = [
+        StoryboardFrameDraft(
+            index=index,
+            phase="start" if index == 1 else "end" if index == 4 else "middle",
+            description=f"frame {index}",
+        )
+        for index in range(1, 5)
+    ]
+    monkeypatch.setattr(
+        "app.main.generate_prompt",
+        lambda *args, **kwargs: PromptDraft(
+            positive_prompt="storyboard prompt",
+            subject_position="at mark",
+            action_constraints="only specified action",
+            spatial_constraints="inside environment",
+            camera_strategy="close on key action",
+            frames=frames,
+        ),
+    )
+    storyboard_response = client.post(
+        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate",
+        json={"mode": "storyboard", "frame_count": 4},
+    )
+    assert storyboard_response.status_code == 200
+    metadata = storyboard_response.json()["prompt_metadata"]
+    assert metadata["mode"] == "storyboard"
+    assert metadata["frame_count"] == 4
+    assert metadata["layout"] == "2x2"
+    assert len(metadata["frames"]) == 4
+
+    invalid_frames = client.post(
+        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate",
+        json={"mode": "storyboard", "frame_count": 5},
+    )
+    assert invalid_frames.status_code == 422
+
+    duration_update = client.patch(
+        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}",
+        json={"duration_seconds": 7.5},
+    )
+    assert duration_update.status_code == 200
+    assert duration_update.json()["duration_seconds"] == 7.5
+    auto_frames = [
+        StoryboardFrameDraft(
+            index=index,
+            phase="start" if index == 1 else "end" if index == 9 else "middle",
+            description=f"auto frame {index}",
+        )
+        for index in range(1, 10)
+    ]
+    monkeypatch.setattr(
+        "app.main.generate_prompt",
+        lambda *args, **kwargs: PromptDraft(
+            positive_prompt="automatic storyboard prompt",
+            subject_position="at mark",
+            action_constraints="only specified action",
+            spatial_constraints="inside environment",
+            camera_strategy="close on key action",
+            frames=auto_frames,
+        ),
+    )
+    automatic_response = client.post(
+        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate",
+        json={"mode": "storyboard"},
+    )
+    assert automatic_response.status_code == 200
+    automatic_metadata = automatic_response.json()["prompt_metadata"]
+    assert automatic_metadata["frame_count"] == 9
+    assert automatic_metadata["frame_count_source"] == "duration_auto"
+    assert automatic_metadata["shot_duration_seconds"] == 7.5
 
     delete_response = client.delete(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}")
     assert delete_response.status_code == 204

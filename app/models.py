@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -178,6 +179,7 @@ class Shot(Base):
     shot_size: Mapped[str] = mapped_column(String(100), default="medium shot")
     camera_angle: Mapped[str] = mapped_column(String(100), default="eye level")
     camera_motion: Mapped[str] = mapped_column(String(100), default="static")
+    duration_seconds: Mapped[float] = mapped_column(Float, default=4.0)
     emotion: Mapped[str] = mapped_column(String(200), default="")
     lighting: Mapped[str] = mapped_column(String(300), default="")
     dialogue: Mapped[str] = mapped_column(Text, default="")
