@@ -7,6 +7,7 @@ const state = {
   imageProviders: [], assetImages: new Map(), imagePollTimer: null,
   metrics: null,
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
+  chatThreads: [], chatThread: null, chatTarget: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -117,6 +118,7 @@ function render() {
   renderSidebar(); renderHeader(); renderWorkflow();
   const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts, metrics: renderMetrics };
   views[state.step]();
+  $("#chat-launcher").hidden = !state.project || !["script", "assets", "shots", "prompts"].includes(state.step);
 }
 
 function renderMetrics() {
@@ -335,6 +337,154 @@ async function generateAssetImage(assetId, provider) {
   startAssetImagePolling(assetId);
   toast("图片生成任务已开始");
 }
+
+function chatPage() { return state.step === "prompts" ? "prompts" : state.step; }
+
+function injectChatTargetButtons() {
+  $$("[data-edit-asset]").forEach(anchor => {
+    const host = anchor.closest(".asset-actions");
+    if (host?.querySelector("[data-chat-target]")) return;
+    const asset = state.assets.find(item => item.id === anchor.dataset.editAsset);
+    host?.insertAdjacentHTML("afterbegin", `<button class="button" data-chat-target="${anchor.dataset.editAsset}" data-chat-type="asset" data-chat-title="与 AI 修改 · @${esc(asset?.name || "资产")}">与 AI 修改</button>`);
+  });
+  $$(".shot-card[data-shot-id]").forEach(card => {
+    if (card.querySelector("[data-chat-target]")) return;
+    const shot = state.scenes.flatMap(scene => scene.shots).find(item => item.id === card.dataset.shotId);
+    card.insertAdjacentHTML("beforeend", `<button class="button card-chat-button" data-chat-target="${card.dataset.shotId}" data-chat-type="shot" data-chat-title="与 AI 修改 · 镜头 ${shot?.sequence || ""}">与 AI 修改</button>`);
+  });
+  $$("[data-generate-prompt]").forEach(anchor => {
+    const host = anchor.closest(".prompt-card-actions");
+    if (host?.querySelector("[data-chat-target]")) return;
+    const versions = state.prompts.get(anchor.dataset.generatePrompt) || [];
+    const prompt = versions[0];
+    if (prompt) host?.insertAdjacentHTML("afterbegin", `<button class="button" data-chat-target="${prompt.id}" data-chat-type="prompt" data-chat-title="与 AI 修改 · 提示词">与 AI 修改</button>`);
+  });
+}
+
+new MutationObserver(injectChatTargetButtons).observe($("#content"), {
+  childList: true, subtree: true,
+});
+
+async function openChat(targetType = null, targetId = null, title = null) {
+  state.chatTarget = { targetType, targetId, title };
+  const query = new URLSearchParams({ page: chatPage() });
+  if (targetId) query.set("target_id", targetId);
+  state.chatThreads = await request(`/projects/${state.project.id}/chat/threads?${query}`);
+  if (!state.chatThreads.length) await createChatThread();
+  else await selectChatThread(state.chatThreads[0].id);
+  $("#chat-title").textContent = title || `与 AI 修改 · ${chatPage()}`;
+  $("#chat-drawer").classList.add("open");
+  $("#chat-drawer").setAttribute("aria-hidden", "false");
+  $("#chat-input").focus();
+}
+
+async function createChatThread() {
+  const target = state.chatTarget || {};
+  const payload = {
+    page: chatPage(),
+    scope: target.targetId ? "object" : "page",
+    target_type: target.targetType || null,
+    target_id: target.targetId || null,
+    title: target.title || `新会话 · ${chatPage()}`,
+  };
+  const thread = await request(`/projects/${state.project.id}/chat/threads`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+  state.chatThreads.unshift(thread);
+  await selectChatThread(thread.id);
+}
+
+async function selectChatThread(threadId) {
+  state.chatThread = await request(`/chat/threads/${threadId}`);
+  renderChat();
+}
+
+function renderChat() {
+  const thread = state.chatThread;
+  $("#chat-thread-select").innerHTML = state.chatThreads.map(item =>
+    `<option value="${item.id}" ${item.id === thread?.id ? "selected" : ""}>${esc(item.title)}</option>`
+  ).join("");
+  if (!thread) return;
+  const messages = thread.messages.map(message =>
+    `<div class="chat-message ${message.role}">${esc(message.content)}</div>`
+  ).join("");
+  const proposals = thread.proposals.map(proposal => {
+    const summary = proposal.after_preview?.summary || "修改提案";
+    const actions = proposal.status === "draft"
+      ? `<button class="button primary" data-chat-apply="${proposal.id}">应用修改</button><button class="button" data-chat-reject="${proposal.id}">放弃</button>`
+      : proposal.status === "applied"
+        ? `<button class="button" data-chat-revert="${proposal.id}">撤销上次修改</button>` : "";
+    return `<article class="proposal-card"><strong>${esc(summary)}</strong><small> · ${esc(proposal.status)}</small><pre>${esc(JSON.stringify(proposal.operations, null, 2))}</pre><div class="proposal-actions">${actions}</div>${proposal.error_message ? `<p class="generation-error">${esc(proposal.error_message)}</p>` : ""}</article>`;
+  }).join("");
+  $("#chat-messages").innerHTML = messages + proposals || `<p class="prompt-empty">描述你想修改的内容，AI 会先给出可预览的提案。</p>`;
+  $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
+}
+
+async function refreshAfterChatChange() {
+  const threadId = state.chatThread.id;
+  await selectProject(state.project.id);
+  await selectChatThread(threadId);
+}
+
+$("#chat-launcher").addEventListener("click", () => openChat().catch(error => toast(error.message, "error")));
+$("#chat-close").addEventListener("click", () => {
+  $("#chat-drawer").classList.remove("open");
+  $("#chat-drawer").setAttribute("aria-hidden", "true");
+  $("#chat-launcher").focus();
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && $("#chat-drawer").classList.contains("open")) {
+    event.preventDefault();
+    $("#chat-close").click();
+  }
+});
+$("#chat-new-thread").addEventListener("click", () => createChatThread().catch(error => toast(error.message, "error")));
+$("#chat-thread-select").addEventListener("change", event => selectChatThread(event.target.value).catch(error => toast(error.message, "error")));
+$("#chat-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const input = $("#chat-input");
+  const content = input.value.trim();
+  if (!content || !state.chatThread) return;
+  input.disabled = true;
+  try {
+    state.chatThread = await request(`/chat/threads/${state.chatThread.id}/messages`, {
+      method: "POST", body: JSON.stringify({ content }),
+    });
+    input.value = "";
+    renderChat();
+  } catch (error) { toast(error.message, "error"); }
+  finally { input.disabled = false; input.focus(); }
+});
+
+document.addEventListener("click", async event => {
+  const targetButton = event.target.closest("[data-chat-target]");
+  const applyButton = event.target.closest("[data-chat-apply]");
+  const rejectButton = event.target.closest("[data-chat-reject]");
+  const revertButton = event.target.closest("[data-chat-revert]");
+  try {
+    if (targetButton) {
+      event.stopPropagation();
+      await openChat(
+        targetButton.dataset.chatType,
+        targetButton.dataset.chatTarget,
+        targetButton.dataset.chatTitle,
+      );
+    } else if (applyButton) {
+      const proposal = state.chatThread.proposals.find(item => item.id === applyButton.dataset.chatApply);
+      if (proposal.operations.some(item => item.action === "delete") && !window.confirm("该提案包含删除操作，确认继续吗？")) return;
+      await request(`/chat/proposals/${proposal.id}/apply`, { method: "POST" });
+      await refreshAfterChatChange();
+      toast("AI 修改已应用");
+    } else if (rejectButton) {
+      await request(`/chat/proposals/${rejectButton.dataset.chatReject}/reject`, { method: "POST" });
+      await selectChatThread(state.chatThread.id);
+    } else if (revertButton) {
+      await request(`/chat/proposals/${revertButton.dataset.chatRevert}/revert`, { method: "POST" });
+      await refreshAfterChatChange();
+      toast("上次 AI 修改已撤销");
+    }
+  } catch (error) { toast(error.message, "error"); }
+});
 
 // Closing a dialog must never enter form validation or asynchronous business handling.
 document.addEventListener("click", event => {
