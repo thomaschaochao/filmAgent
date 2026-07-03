@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -16,9 +17,16 @@ from app.models import (
     AgentRun,
     Asset,
     AssetImage,
+    ChangeProposal,
+    ChatMessage,
+    ChatMessageRole,
+    ChatScope,
+    ChatThread,
+    ChatThreadStatus,
     Project,
     ProjectStatus,
     PromptVersion,
+    ProposalStatus,
     Scene,
     ScriptVersion,
     Shot,
@@ -30,18 +38,29 @@ from app.schemas import (
     AssetImageRead,
     AssetRead,
     AssetUpdate,
+    ChangeProposalRead,
+    ChatMessageCreate,
+    ChatThreadCreate,
+    ChatThreadDetail,
+    ChatThreadRead,
     ImageProviderRead,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
     PromptGenerateRequest,
     PromptRead,
+    ProposalOperation,
     SceneRead,
     ScriptCreate,
     ScriptGenerateRequest,
     ScriptRead,
     ShotRead,
     ShotUpdate,
+)
+from app.services.chat import (
+    ChatValidationError,
+    validate_base_version,
+    validate_operation_scope,
 )
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
@@ -124,6 +143,20 @@ def require_asset(db: Session, asset_id: str) -> Asset:
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     return asset
+
+
+def require_chat_thread(db: Session, thread_id: str) -> ChatThread:
+    thread = db.get(ChatThread, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    return thread
+
+
+def require_proposal(db: Session, proposal_id: str) -> ChangeProposal:
+    proposal = db.get(ChangeProposal, proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Change proposal not found")
+    return proposal
 
 
 def require_asset_image(db: Session, asset_id: str, image_id: str) -> AssetImage:
@@ -896,3 +929,247 @@ def list_prompts(shot_id: str, db: DbSession) -> list[PromptVersion]:
         .order_by(PromptVersion.version.desc())
     )
     return list(db.scalars(statement).all())
+
+
+def _chat_target_project_id(db: Session, resource: str, target_id: str) -> str | None:
+    if resource == "asset":
+        target = db.get(Asset, target_id)
+        return target.project_id if target else None
+    if resource == "shot":
+        target = db.get(Shot, target_id)
+        return target.scene.project_id if target else None
+    if resource == "script":
+        target = db.get(ScriptVersion, target_id)
+        return target.project_id if target else None
+    if resource == "prompt":
+        target = db.get(PromptVersion, target_id)
+        return target.shot.scene.project_id if target else None
+    return None
+
+
+def _editable_snapshot(db: Session, resource: str, target_id: str) -> dict:
+    target = {
+        "asset": lambda: db.get(Asset, target_id),
+        "shot": lambda: db.get(Shot, target_id),
+        "script": lambda: db.get(ScriptVersion, target_id),
+        "prompt": lambda: db.get(PromptVersion, target_id),
+    }[resource]()
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"{resource.title()} not found")
+    fields = {
+        "asset": ("asset_type", "name", "description", "prompt"),
+        "shot": (
+            "script_reference", "subject", "action", "environment", "shot_size",
+            "camera_angle", "camera_motion", "duration_seconds", "emotion", "lighting",
+            "dialogue", "narrative_purpose", "continuity", "is_locked", "sequence",
+        ),
+        "script": ("title", "content", "source_type", "version"),
+        "prompt": (
+            "positive_prompt", "negative_prompt", "model_target", "prompt_metadata", "version",
+        ),
+    }[resource]
+    return {field: getattr(target, field) for field in fields}
+
+
+@app.post(
+    f"{API}/projects/{{project_id}}/chat/threads",
+    response_model=ChatThreadRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_chat_thread(project_id: str, payload: ChatThreadCreate, db: DbSession) -> ChatThread:
+    require_project(db, project_id)
+    if payload.scope == ChatScope.object:
+        target_project_id = _chat_target_project_id(db, payload.target_type, payload.target_id)
+        if target_project_id is None:
+            raise HTTPException(status_code=404, detail="Chat target not found")
+        if target_project_id != project_id:
+            raise HTTPException(status_code=403, detail="Chat target belongs to another project")
+    thread = ChatThread(project_id=project_id, **payload.model_dump())
+    db.add(thread)
+    db.commit()
+    db.refresh(thread)
+    return thread
+
+
+@app.get(f"{API}/projects/{{project_id}}/chat/threads", response_model=list[ChatThreadRead])
+def list_chat_threads(
+    project_id: str,
+    db: DbSession,
+    page: str | None = None,
+    target_id: str | None = None,
+    thread_status: ChatThreadStatus | None = None,
+) -> list[ChatThread]:
+    require_project(db, project_id)
+    statement = select(ChatThread).where(ChatThread.project_id == project_id)
+    if page:
+        statement = statement.where(ChatThread.page == page)
+    if target_id:
+        statement = statement.where(ChatThread.target_id == target_id)
+    if thread_status:
+        statement = statement.where(ChatThread.status == thread_status)
+    return list(db.scalars(statement.order_by(ChatThread.updated_at.desc())).all())
+
+
+@app.get(f"{API}/chat/threads/{{thread_id}}", response_model=ChatThreadDetail)
+def get_chat_thread(thread_id: str, db: DbSession) -> ChatThread:
+    statement = (
+        select(ChatThread)
+        .where(ChatThread.id == thread_id)
+        .options(selectinload(ChatThread.messages), selectinload(ChatThread.proposals))
+    )
+    thread = db.scalar(statement)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    return thread
+
+
+@app.post(f"{API}/chat/threads/{{thread_id}}/messages", response_model=ChatThreadDetail)
+def create_chat_message(thread_id: str, payload: ChatMessageCreate, db: DbSession) -> ChatThread:
+    thread = require_chat_thread(db, thread_id)
+    user_message = ChatMessage(
+        thread_id=thread.id,
+        role=ChatMessageRole.user,
+        content=payload.content,
+        context_summary={"page": thread.page, "scope": thread.scope, "target_id": thread.target_id},
+    )
+    db.add(user_message)
+    db.flush()
+    assistant = ChatMessage(
+        thread_id=thread.id,
+        role=ChatMessageRole.assistant,
+        content=("已生成结构化修改提案。" if payload.proposal else "已记录你的修改意图。"),
+        context_summary={"deterministic": True},
+    )
+    db.add(assistant)
+    db.flush()
+    if payload.proposal:
+        before: dict[str, dict] = {}
+        base: dict[str, dict] = {}
+        for operation in payload.proposal.operations:
+            try:
+                validate_operation_scope(thread, operation)
+            except ChatValidationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if operation.target_id:
+                target_project_id = _chat_target_project_id(
+                    db, operation.resource, operation.target_id
+                )
+                if target_project_id != thread.project_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Proposal target is outside the project",
+                    )
+                snapshot = _editable_snapshot(db, operation.resource, operation.target_id)
+                key = f"{operation.resource}:{operation.target_id}"
+                before[key] = snapshot
+                base[key] = snapshot
+        db.add(
+            ChangeProposal(
+                thread_id=thread.id,
+                trigger_message_id=assistant.id,
+                target_scope={
+                    "page": thread.page,
+                    "scope": thread.scope,
+                    "target_type": thread.target_type,
+                    "target_id": thread.target_id,
+                },
+                operations=[operation.model_dump() for operation in payload.proposal.operations],
+                before_snapshot=before,
+                after_preview={"summary": payload.proposal.summary},
+                base_version=base,
+            )
+        )
+    thread.updated_at = datetime.now(UTC)
+    db.commit()
+    return get_chat_thread(thread.id, db)
+
+
+@app.post(f"{API}/chat/proposals/{{proposal_id}}/reject", response_model=ChangeProposalRead)
+def reject_chat_proposal(proposal_id: str, db: DbSession) -> ChangeProposal:
+    proposal = require_proposal(db, proposal_id)
+    if proposal.status != ProposalStatus.draft:
+        raise HTTPException(status_code=409, detail="Only draft proposals can be rejected")
+    proposal.status = ProposalStatus.rejected
+    db.commit()
+    db.refresh(proposal)
+    return proposal
+
+
+@app.post(f"{API}/chat/proposals/{{proposal_id}}/apply", response_model=ChangeProposalRead)
+def apply_chat_proposal(proposal_id: str, db: DbSession) -> ChangeProposal:
+    proposal = require_proposal(db, proposal_id)
+    if proposal.status != ProposalStatus.draft:
+        raise HTTPException(status_code=409, detail="Proposal has already been handled")
+    thread = proposal.thread
+    proposal.status = ProposalStatus.applying
+    try:
+        operations = proposal.operations
+        after: dict[str, dict] = {}
+        for raw_operation in operations:
+            operation = ProposalOperation.model_validate(raw_operation)
+            validate_operation_scope(thread, operation)
+            if operation.action != "update" or operation.resource not in {"asset", "shot"}:
+                raise ChatValidationError("This proposal operation is not supported yet")
+            key = f"{operation.resource}:{operation.target_id}"
+            current = _editable_snapshot(db, operation.resource, operation.target_id)
+            validate_base_version(proposal.base_version[key], current)
+            target = db.get(Asset if operation.resource == "asset" else Shot, operation.target_id)
+            allowed = set(current) - {"sequence"}
+            unknown = set(operation.values) - allowed
+            if unknown:
+                raise ChatValidationError(f"Unknown editable fields: {', '.join(sorted(unknown))}")
+            if isinstance(target, Shot) and target.is_locked:
+                raise ChatValidationError("Locked shots cannot be changed by AI")
+            for field, value in operation.values.items():
+                setattr(target, field, value)
+            db.flush()
+            after[key] = _editable_snapshot(db, operation.resource, operation.target_id)
+        proposal.after_preview = {**proposal.after_preview, "snapshots": after}
+        proposal.status = ProposalStatus.applied
+        proposal.applied_at = datetime.now(UTC)
+        db.commit()
+    except (ChatValidationError, KeyError, ValueError) as exc:
+        db.rollback()
+        proposal = require_proposal(db, proposal_id)
+        proposal.status = ProposalStatus.failed
+        proposal.error_message = str(exc)
+        db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.refresh(proposal)
+    return proposal
+
+
+@app.post(f"{API}/chat/proposals/{{proposal_id}}/revert", response_model=ChangeProposalRead)
+def revert_chat_proposal(proposal_id: str, db: DbSession) -> ChangeProposal:
+    proposal = require_proposal(db, proposal_id)
+    if proposal.status != ProposalStatus.applied:
+        raise HTTPException(status_code=409, detail="Only applied proposals can be reverted")
+    latest = db.scalar(
+        select(ChangeProposal)
+        .where(
+            ChangeProposal.thread_id == proposal.thread_id,
+            ChangeProposal.status == ProposalStatus.applied,
+        )
+        .order_by(ChangeProposal.applied_at.desc())
+    )
+    if latest is None or latest.id != proposal.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Only the latest applied proposal can be reverted",
+        )
+    try:
+        after = proposal.after_preview.get("snapshots", {})
+        for key, before_snapshot in proposal.before_snapshot.items():
+            resource, target_id = key.split(":", 1)
+            validate_base_version(after[key], _editable_snapshot(db, resource, target_id))
+            target = db.get(Asset if resource == "asset" else Shot, target_id)
+            for field, value in before_snapshot.items():
+                setattr(target, field, value)
+        proposal.status = ProposalStatus.reverted
+        proposal.reverted_at = datetime.now(UTC)
+        db.commit()
+    except (ChatValidationError, KeyError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Cannot safely revert: {exc}") from exc
+    db.refresh(proposal)
+    return proposal

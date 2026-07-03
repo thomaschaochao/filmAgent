@@ -81,6 +81,102 @@ def test_missing_project_returns_404(client):
     assert response.status_code == 404
 
 
+def test_chat_proposal_apply_and_revert(client):
+    project = client.post("/api/v1/projects", json={"name": "Chat Test"}).json()
+    asset = client.post(
+        f"/api/v1/projects/{project['id']}/assets",
+        json={"asset_type": "character", "name": "Hero", "description": "Old"},
+    ).json()
+    thread_response = client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={
+            "page": "assets",
+            "scope": "object",
+            "target_type": "asset",
+            "target_id": asset["id"],
+            "title": "Edit Hero",
+        },
+    )
+    assert thread_response.status_code == 201
+    thread = thread_response.json()
+
+    message_response = client.post(
+        f"/api/v1/chat/threads/{thread['id']}/messages",
+        json={
+            "content": "Make the description more specific",
+            "proposal": {
+                "summary": "Update Hero description",
+                "operations": [
+                    {
+                        "action": "update",
+                        "resource": "asset",
+                        "target_id": asset["id"],
+                        "values": {"description": "Specific"},
+                    }
+                ],
+            },
+        },
+    )
+    assert message_response.status_code == 200
+    detail = message_response.json()
+    assert len(detail["messages"]) == 2
+    proposal = detail["proposals"][0]
+    assert proposal["status"] == "draft"
+
+    apply_response = client.post(f"/api/v1/chat/proposals/{proposal['id']}/apply")
+    assert apply_response.status_code == 200
+    assert apply_response.json()["status"] == "applied"
+    assert client.get(f"/api/v1/projects/{project['id']}/assets").json()[0][
+        "description"
+    ] == "Specific"
+
+    revert_response = client.post(f"/api/v1/chat/proposals/{proposal['id']}/revert")
+    assert revert_response.status_code == 200
+    assert revert_response.json()["status"] == "reverted"
+    assert client.get(f"/api/v1/projects/{project['id']}/assets").json()[0][
+        "description"
+    ] == "Old"
+
+
+def test_object_chat_rejects_cross_object_proposal(client):
+    project = client.post("/api/v1/projects", json={"name": "Scoped Chat"}).json()
+    first = client.post(
+        f"/api/v1/projects/{project['id']}/assets",
+        json={"asset_type": "character", "name": "First"},
+    ).json()
+    second = client.post(
+        f"/api/v1/projects/{project['id']}/assets",
+        json={"asset_type": "character", "name": "Second"},
+    ).json()
+    thread = client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={
+            "page": "assets",
+            "scope": "object",
+            "target_type": "asset",
+            "target_id": first["id"],
+        },
+    ).json()
+    response = client.post(
+        f"/api/v1/chat/threads/{thread['id']}/messages",
+        json={
+            "content": "Edit another asset",
+            "proposal": {
+                "summary": "Out of scope",
+                "operations": [
+                    {
+                        "action": "update",
+                        "resource": "asset",
+                        "target_id": second["id"],
+                        "values": {"description": "No"},
+                    }
+                ],
+            },
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_asset_crud_and_reference_image_upload(client):
     project = client.post("/api/v1/projects", json={"name": "Asset Test"}).json()
     create_response = client.post(

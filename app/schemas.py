@@ -329,6 +329,11 @@ class ChangeProposalDraft(BaseModel):
     summary: str = Field(min_length=1)
 
 
+class ChatMessageCreate(BaseModel):
+    content: str = Field(min_length=1)
+    proposal: ChangeProposalDraft | None = None
+
+
 class ChatThreadRead(ORMModel):
     id: str
     project_id: str
@@ -365,3 +370,8 @@ class ChangeProposalRead(ORMModel):
     created_at: datetime
     applied_at: datetime | None
     reverted_at: datetime | None
+
+
+class ChatThreadDetail(ChatThreadRead):
+    messages: list[ChatMessageRead]
+    proposals: list[ChangeProposalRead]
