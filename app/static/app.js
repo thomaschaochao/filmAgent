@@ -118,7 +118,8 @@ function render() {
   renderSidebar(); renderHeader(); renderWorkflow();
   const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts, metrics: renderMetrics };
   views[state.step]();
-  $("#chat-launcher").hidden = !state.project || !["script", "assets", "shots", "prompts"].includes(state.step);
+  const chatAvailable = state.project && ["script", "assets", "shots", "prompts"].includes(state.step);
+  $("#chat-launcher").hidden = !chatAvailable || $("#chat-drawer").classList.contains("open");
 }
 
 function renderMetrics() {
@@ -375,6 +376,7 @@ async function openChat(targetType = null, targetId = null, title = null) {
   $("#chat-title").textContent = title || `与 AI 修改 · ${chatPage()}`;
   $("#chat-drawer").classList.add("open");
   $("#chat-drawer").setAttribute("aria-hidden", "false");
+  $("#chat-launcher").hidden = true;
   $("#chat-input").focus();
 }
 
@@ -430,6 +432,7 @@ $("#chat-launcher").addEventListener("click", () => openChat().catch(error => to
 $("#chat-close").addEventListener("click", () => {
   $("#chat-drawer").classList.remove("open");
   $("#chat-drawer").setAttribute("aria-hidden", "true");
+  $("#chat-launcher").hidden = !state.project || !["script", "assets", "shots", "prompts"].includes(state.step);
   $("#chat-launcher").focus();
 });
 document.addEventListener("keydown", event => {
