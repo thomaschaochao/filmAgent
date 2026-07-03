@@ -9,7 +9,7 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260703-2" in response.text
+    assert "/static/app.js?v=20260703-3" in response.text
     assert "/static/styles.css?v=20260703-2" in response.text
     assert "data-close-dialog" in response.text
 
@@ -33,6 +33,7 @@ def test_frontend_entrypoint(client):
     assert "data-copy-frame" in app_response.text
     assert "openChat" in app_response.text
     assert "data-chat-apply" in app_response.text
+    assert "chatTargetButton ? null" in app_response.text
     assert 'id="chat-drawer"' in response.text
 
 

@@ -499,6 +499,7 @@ document.addEventListener("click", event => {
 }, true);
 
 document.addEventListener("click", async event => {
+  const chatTargetButton = event.target.closest("[data-chat-target]");
   const projectButton = event.target.closest("[data-project-id]");
   const stepButton = event.target.closest("[data-step], [data-step-next]");
   const actionButton = event.target.closest("[data-action]");
@@ -518,7 +519,7 @@ document.addEventListener("click", async event => {
   const copyPromptButton = event.target.closest("[data-copy-prompt]");
   const copyFrameButton = event.target.closest("[data-copy-frame]");
   const deleteShotButton = event.target.closest("[data-delete-shot]");
-  const shotCard = event.target.closest("[data-shot-id]");
+  const shotCard = chatTargetButton ? null : event.target.closest("[data-shot-id]");
   try {
     if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
     else if (stepButton && !stepButton.disabled) setStep(stepButton.dataset.step || stepButton.dataset.stepNext);
