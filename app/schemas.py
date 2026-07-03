@@ -1,9 +1,16 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models import ProjectStatus
+from app.models import (
+    ChatMessageRole,
+    ChatPage,
+    ChatScope,
+    ChatThreadStatus,
+    ProjectStatus,
+    ProposalStatus,
+)
 
 
 class ORMModel(BaseModel):
@@ -269,3 +276,92 @@ class AgentMetricsRead(BaseModel):
     request_failed_count: int
     validations: list[ValidationMetricRead]
     recent_runs: list[AgentRunRead]
+
+
+CHAT_TARGET_TYPES = {
+    ChatPage.script: {"script"},
+    ChatPage.assets: {"asset"},
+    ChatPage.shots: {"shot"},
+    ChatPage.prompts: {"prompt"},
+}
+
+
+class ChatThreadCreate(BaseModel):
+    page: ChatPage
+    scope: ChatScope = ChatScope.page
+    target_type: str | None = None
+    target_id: str | None = None
+    title: str = Field(default="New chat", min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "ChatThreadCreate":
+        if self.scope == ChatScope.page and (self.target_type or self.target_id):
+            raise ValueError("page-scoped threads cannot specify a target")
+        if self.scope == ChatScope.object:
+            if not self.target_type or not self.target_id:
+                raise ValueError("object-scoped threads require target_type and target_id")
+            if self.target_type not in CHAT_TARGET_TYPES[self.page]:
+                raise ValueError("target_type does not belong to the selected page")
+        return self
+
+
+ProposalAction = Literal["create", "update", "delete", "reorder", "create_version"]
+ProposalResource = Literal["script", "asset", "shot", "prompt"]
+
+
+class ProposalOperation(BaseModel):
+    action: ProposalAction
+    resource: ProposalResource
+    target_id: str | None = None
+    values: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "ProposalOperation":
+        if self.action in {"update", "delete", "reorder", "create_version"} and not self.target_id:
+            raise ValueError(f"{self.action} operations require target_id")
+        if self.action == "create" and self.target_id:
+            raise ValueError("create operations cannot specify target_id")
+        return self
+
+
+class ChangeProposalDraft(BaseModel):
+    operations: list[ProposalOperation] = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class ChatThreadRead(ORMModel):
+    id: str
+    project_id: str
+    page: ChatPage
+    scope: ChatScope
+    target_type: str | None
+    target_id: str | None
+    title: str
+    status: ChatThreadStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatMessageRead(ORMModel):
+    id: str
+    thread_id: str
+    role: ChatMessageRole
+    content: str
+    context_summary: dict
+    created_at: datetime
+
+
+class ChangeProposalRead(ORMModel):
+    id: str
+    thread_id: str
+    trigger_message_id: str | None
+    target_scope: dict
+    operations: list[ProposalOperation]
+    before_snapshot: dict
+    after_preview: dict
+    base_version: dict
+    status: ProposalStatus
+    error_message: str | None
+    created_at: datetime
+    applied_at: datetime | None
+    reverted_at: datetime | None

@@ -38,6 +38,38 @@ class ProjectStatus(StrEnum):
     completed = "COMPLETED"
 
 
+class ChatPage(StrEnum):
+    script = "script"
+    assets = "assets"
+    shots = "shots"
+    prompts = "prompts"
+
+
+class ChatScope(StrEnum):
+    page = "page"
+    object = "object"
+
+
+class ChatThreadStatus(StrEnum):
+    active = "active"
+    archived = "archived"
+
+
+class ChatMessageRole(StrEnum):
+    user = "user"
+    assistant = "assistant"
+    system = "system"
+
+
+class ProposalStatus(StrEnum):
+    draft = "draft"
+    applying = "applying"
+    applied = "applied"
+    failed = "failed"
+    rejected = "rejected"
+    reverted = "reverted"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -64,6 +96,9 @@ class Project(Base):
     )
     assets: Mapped[list["Asset"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Asset.name"
+    )
+    chat_threads: Mapped[list["ChatThread"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
     )
 
 
@@ -225,3 +260,77 @@ class AgentRun(Base):
     is_regeneration: Mapped[bool] = mapped_column(Boolean, default=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChatThread(Base):
+    __tablename__ = "chat_threads"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    page: Mapped[ChatPage] = mapped_column(Enum(ChatPage), index=True)
+    scope: Mapped[ChatScope] = mapped_column(Enum(ChatScope), index=True)
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200), default="New chat")
+    status: Mapped[ChatThreadStatus] = mapped_column(
+        Enum(ChatThreadStatus), default=ChatThreadStatus.active, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="chat_threads")
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        back_populates="thread", cascade="all, delete-orphan", order_by="ChatMessage.created_at"
+    )
+    proposals: Mapped[list["ChangeProposal"]] = relationship(
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        order_by="ChangeProposal.created_at",
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[ChatMessageRole] = mapped_column(Enum(ChatMessageRole), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    context_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    thread: Mapped[ChatThread] = relationship(back_populates="messages")
+    proposals: Mapped[list["ChangeProposal"]] = relationship(back_populates="trigger_message")
+
+
+class ChangeProposal(Base):
+    __tablename__ = "change_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True
+    )
+    trigger_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    target_scope: Mapped[dict] = mapped_column(JSON, default=dict)
+    operations: Mapped[list] = mapped_column(JSON, default=list)
+    before_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    after_preview: Mapped[dict] = mapped_column(JSON, default=dict)
+    base_version: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[ProposalStatus] = mapped_column(
+        Enum(ProposalStatus), default=ProposalStatus.draft, index=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    thread: Mapped[ChatThread] = relationship(back_populates="proposals")
+    trigger_message: Mapped[ChatMessage | None] = relationship(back_populates="proposals")
