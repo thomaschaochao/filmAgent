@@ -1,7 +1,9 @@
 import json
 import re
 import unicodedata
-from typing import TypeVar
+from collections.abc import Callable
+from difflib import SequenceMatcher
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -41,6 +43,7 @@ def _validated_json(
     user: str,
     model: type[DraftT],
     operation: str,
+    payload_transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> DraftT:
     last_error: ValidationError | None = None
     current_user = user
@@ -48,6 +51,8 @@ def _validated_json(
     for _schema_attempt in range(1, 3):
         try:
             payload = client.chat_json(system, current_user)
+            if payload_transform is not None:
+                payload = payload_transform(payload)
             total_attempts += max(getattr(client, "attempt_count", 1), 1)
             result = model.model_validate(payload)
             if hasattr(client, "last_call"):
@@ -70,6 +75,76 @@ def _validated_json(
 def _comparable_text(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"[^\w\u3400-\u9fff]+", "", value)
+
+
+def _script_reference_candidates(script: str) -> list[str]:
+    candidates: list[str] = []
+    for line in script.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = re.split(r"(?<=[。！？!?；;])", line)
+        candidates.extend(part.strip() for part in parts if _comparable_text(part))
+    return candidates
+
+
+def _best_script_reference(candidates: list[str], shot_text: str, fallback_index: int) -> str:
+    normalized_shot = _comparable_text(shot_text)
+    if not candidates:
+        return ""
+
+    def score(candidate: str) -> float:
+        normalized_candidate = _comparable_text(candidate)
+        if not normalized_candidate or not normalized_shot:
+            return 0.0
+        containment = 1.0 if normalized_candidate in normalized_shot else 0.0
+        shared = len(set(normalized_candidate) & set(normalized_shot)) / len(
+            set(normalized_candidate)
+        )
+        similarity = SequenceMatcher(None, normalized_candidate, normalized_shot).ratio()
+        return containment * 2 + shared + similarity
+
+    scored = [(score(candidate), index, candidate) for index, candidate in enumerate(candidates)]
+    best_score, _, best_candidate = max(scored)
+    if best_score > 0:
+        return best_candidate
+    return candidates[min(fallback_index, len(candidates) - 1)]
+
+
+def add_local_script_references(payload: dict[str, Any], script: str) -> dict[str, Any]:
+    """Fill missing or invented storyboard references with exact excerpts from the script."""
+    candidates = _script_reference_candidates(script)
+    normalized_script = _comparable_text(script)
+    shot_index = 0
+    for scene in payload.get("scenes") or []:
+        scene_text = " ".join(
+            str(scene.get(key) or "") for key in ("heading", "summary", "location", "time_of_day")
+        )
+        for shot in scene.get("shots") or []:
+            reference = str(shot.get("script_reference") or "").strip()
+            normalized_reference = _comparable_text(reference)
+            if normalized_reference and normalized_reference in normalized_script:
+                shot_index += 1
+                continue
+            shot_text = " ".join(
+                [
+                    scene_text,
+                    *(
+                        str(shot.get(key) or "")
+                        for key in (
+                            "subject",
+                            "action",
+                            "environment",
+                            "dialogue",
+                            "narrative_purpose",
+                            "continuity",
+                        )
+                    ),
+                ]
+            )
+            shot["script_reference"] = _best_script_reference(candidates, shot_text, shot_index)
+            shot_index += 1
+    return payload
 
 
 def validate_storyboard(
@@ -238,7 +313,14 @@ def generate_storyboard(client: DeepSeekClient, project: Project, script: str) -
         f"语言：{project.language}\n世界与地域设定：{project.world_setting or '未指定'}\n"
         f"剧本：\n{script}"
     )
-    draft = _validated_json(client, system, user, StoryboardDraft, "storyboard")
+    draft = _validated_json(
+        client,
+        system,
+        user,
+        StoryboardDraft,
+        "storyboard",
+        payload_transform=lambda payload: add_local_script_references(payload, script),
+    )
     missing_duration = [
         (scene.sequence, shot.sequence)
         for scene in draft.scenes

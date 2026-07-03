@@ -4,6 +4,7 @@ from app.models import Asset, Project, Shot
 from app.schemas import AssetExtractionDraft, SceneDraft, ShotDraft, StoryboardDraft
 from app.services.deepseek import DeepSeekError
 from app.services.workflow import (
+    add_local_script_references,
     extract_assets,
     generate_asset_prompt,
     generate_prompt,
@@ -411,3 +412,43 @@ def test_schema_failure_reports_exact_field_location():
     details = [item["detail"] for item in exc_info.value.validation_results]
     assert any("assets.0.asset_type" in detail for detail in details)
     assert any("assets.0.description" in detail for detail in details)
+
+
+def test_local_script_references_fill_missing_and_replace_invented_values():
+    payload = {
+        "scenes": [
+            {
+                "sequence": 1,
+                "heading": "车站",
+                "shots": [
+                    {"subject": "林深", "action": "推开车站大门"},
+                    {
+                        "script_reference": "模型编造的原文",
+                        "subject": "苏晚",
+                        "dialogue": "苏晚：你终于来了。",
+                    },
+                ],
+            }
+        ]
+    }
+    script = "林深推开车站大门。\n苏晚：你终于来了。"
+
+    repaired = add_local_script_references(payload, script)
+
+    shots = repaired["scenes"][0]["shots"]
+    assert shots[0]["script_reference"] == "林深推开车站大门。"
+    assert shots[1]["script_reference"] == "苏晚：你终于来了。"
+
+
+def test_generate_storyboard_accepts_missing_reference_after_local_repair():
+    shot = generated_shot(1)
+    shot.pop("script_reference")
+    client = GeneratedStoryboardClient([shot])
+
+    draft = generate_storyboard(
+        client,
+        Project(name="Film", visual_style="cinematic", aspect_ratio="16:9"),
+        "A speaks",
+    )
+
+    assert draft.scenes[0].shots[0].script_reference == "A speaks"
