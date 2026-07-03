@@ -5,7 +5,7 @@ const state = {
   prompts: new Map(), step: "project", scriptMode: "manual",
   assetSelectionMode: false, selectedAssetIds: new Set(),
   imageProviders: [], assetImages: new Map(), imagePollTimer: null,
-  metrics: null,
+  metrics: null, returnStep: "project",
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
   chatThreads: [], chatThread: null, chatTarget: null,
 };
@@ -52,8 +52,9 @@ function loading(show, title = "AI 正在工作", copy = "这可能需要一点�
 }
 
 async function setStep(step) {
+  if (step === "metrics" && state.step !== "metrics") state.returnStep = state.step;
   state.step = step;
-  const order = ["project", "script", "assets", "shots", "prompts", "metrics"];
+  const order = ["project", "script", "assets", "shots", "prompts"];
   const current = order.indexOf(step);
   $$(".workflow-step").forEach((node, index) => {
     node.classList.toggle("active", index === current);
@@ -90,6 +91,7 @@ function renderSidebar() {
 function renderHeader() {
   $("#current-project-title").textContent = state.project?.name || "选择一个项目";
   $("#project-meta").innerHTML = state.project ? `<span class="meta-chip">${esc(state.project.aspect_ratio)}</span><span class="meta-chip">${esc(state.project.language)}</span><span class="meta-chip">${esc(statusLabels[state.project.status] || state.project.status)}</span>` : "";
+  $("[data-action='open-metrics']").disabled = !state.project;
 }
 
 function renderWorkflow() {
@@ -100,7 +102,6 @@ function renderWorkflow() {
     assets: approvedScript,
     shots: approvedScript,
     prompts: state.scenes.length > 0,
-    metrics: Boolean(state.project),
   };
   $$(".workflow-step").forEach(node => {
     node.disabled = !availability[node.dataset.step];
@@ -109,7 +110,6 @@ function renderWorkflow() {
       assets: "请先确认一个剧本版本",
       shots: "请先确认一个剧本版本",
       prompts: "请先生成分镜",
-      metrics: "请先创建或选择项目",
     }[node.dataset.step] : "";
   });
 }
@@ -131,19 +131,37 @@ function renderMetrics() {
     return;
   }
   const statusLabel = { passed: "通过", validation_failed: "校验失败", request_failed: "请求失败" };
+  const operationLabel = { script_generation: "剧本生成", asset_extraction: "资产提取", asset_prompt_generation: "资产提示词", storyboard_generation: "分镜生成", shot_prompt_generation: "镜头提示词", image_generation: "图片生成", chat_edit_generation: "AI 修改助手" };
   $("#content").innerHTML = `
-    <div class="section-head"><div><span class="eyebrow">AGENT OBSERVATORY</span><h2>Agent 评估</h2><p>当前第一阶段统计分镜生成的确定性校验与重复生成行为。</p></div><button class="button" data-action="refresh-metrics">刷新指标</button></div>
+    <div class="section-head"><div><span class="eyebrow">AGENT OBSERVATORY</span><h2>运行监控与 Agent 评估</h2><p>独立监控 DeepSeek、OpenAI、Seedream 等外部模型接口的调用与质量结果。</p></div><div class="actions"><button class="button" data-action="close-metrics">← 返回制作</button><button class="button primary" data-action="refresh-metrics">刷新指标</button></div></div>
     <div class="metrics-grid">
       <article class="panel metric-card"><span>总生成次数</span><strong>${metrics.total_runs}</strong><small>包含成功与失败运行</small></article>
       <article class="panel metric-card"><span>总体通过率</span><strong>${metrics.pass_rate}%</strong><small>${metrics.passed_runs} 通过 / ${metrics.failed_runs} 失败</small></article>
       <article class="panel metric-card"><span>重复生成次数</span><strong>${metrics.regeneration_count}</strong><small>同一剧本首次生成之后的运行</small></article>
       <article class="panel metric-card"><span>校验失败</span><strong>${metrics.validation_failed_count}</strong><small>DeepSeek 返回有效，但未达质量门槛</small></article>
       <article class="panel metric-card"><span>请求失败</span><strong>${metrics.request_failed_count}</strong><small>网络、接口或结构解析失败</small></article>
+      <article class="panel metric-card"><span>累计 Token</span><strong>${metrics.total_input_tokens + metrics.total_output_tokens}</strong><small>输入 ${metrics.total_input_tokens} / 输出 ${metrics.total_output_tokens}</small></article>
+      <article class="panel metric-card"><span>平均延迟</span><strong>${metrics.average_latency_ms}ms</strong><small>仅统计供应商返回了耗时的运行</small></article>
     </div>
     <div class="metrics-layout">
       <section class="panel metrics-panel"><div class="panel-heading"><h3>各项校验通过率</h3></div>${metrics.validations.length ? `<div class="validation-list">${metrics.validations.map(item => `<div class="validation-row"><div><strong>${esc(item.label)}</strong><small>${item.passed}/${item.total} 次通过</small></div><div class="metric-progress"><i style="width:${item.pass_rate}%"></i></div><b>${item.pass_rate}%</b></div>`).join("")}</div>` : `<p class="prompt-empty">生成一次分镜后，这里会出现编号、覆盖率、引用匹配和重复镜头指标。</p>`}</section>
-      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}"><div><strong>${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")}</small></div><span>${run.error_message ? esc(run.error_message) : "全部校验通过"}</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
+      <section class="panel metrics-panel"><div class="panel-heading"><h3>最近运行</h3><small>点击任意记录查看请求与校验详情</small></div>${metrics.recent_runs.length ? `<div class="run-list">${metrics.recent_runs.map(run => `<article class="run-row ${run.status}" data-agent-run="${run.id}" role="button" tabindex="0"><div><strong>${operationLabel[run.operation] || esc(run.operation)} · ${statusLabel[run.status] || esc(run.status)}${run.is_regeneration ? " · 重复生成" : ""}</strong><small>${new Date(run.created_at).toLocaleString("zh-CN")} · ${esc(run.model || "unknown model")}</small></div><span>${run.error_message ? esc(run.error_message) : `耗时 ${run.latency_ms ?? "-"}ms · Token ${(run.input_tokens || 0) + (run.output_tokens || 0)}`} · 查看详情 →</span></article>`).join("")}</div>` : `<p class="prompt-empty">尚无 Agent 运行记录。</p>`}</section>
     </div>`;
+}
+
+async function openAgentRunDetail(runId) {
+  const run = await request(`/agent-runs/${runId}`);
+  const checks = run.validation_results || [];
+  $("#agent-run-detail").innerHTML = `
+    <div class="dialog-head"><div><span class="eyebrow">REQUEST TRACE</span><h2>${esc(run.operation)} · ${esc(run.status)}</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></div>
+    <div class="run-detail-meta"><span>供应商 <strong>${esc(run.provider)}</strong></span><span>模型 <strong>${esc(run.model || "-")}</strong></span><span>耗时 <strong>${run.latency_ms ?? "-"}ms</strong></span><span>尝试 <strong>${run.attempt_count}</strong></span><span>Token <strong>${(run.input_tokens || 0) + (run.output_tokens || 0)}</strong></span><span>Request ID <strong>${esc(run.request_id || "-")}</strong></span></div>
+    <section class="run-detail-section"><h3>校验结果</h3>${checks.length ? `<div class="run-check-list">${checks.map(check => `<article class="run-check ${check.passed ? "passed" : "failed"}"><strong>${check.passed ? "✓" : "×"} ${esc(check.label)}</strong><code>${esc(check.key)}</code><p>${esc(check.detail)}</p><small>实际值：${esc(check.value)} · 门槛：${esc(check.threshold ?? "-")}</small></article>`).join("")}</div>` : `<p class="prompt-empty">本次调用没有独立业务校验项；状态由接口请求结果决定。</p>`}</section>
+    ${run.error_message ? `<section class="run-detail-section error-block"><h3>错误阶段：${esc(run.error_type || "unknown")}</h3><p>${esc(run.error_message)}</p></section>` : ""}
+    <section class="run-detail-section"><h3>System Prompt</h3><pre>${esc(run.system_prompt || "（该接口没有 system prompt）")}</pre></section>
+    <section class="run-detail-section"><h3>User Prompt / 请求正文</h3><pre>${esc(run.user_prompt || "（未记录请求正文）")}</pre></section>
+    <section class="run-detail-section"><h3>原始返回</h3><pre>${esc(run.raw_response || "（接口未返回正文）")}</pre></section>
+    <div class="dialog-actions"><button class="button" type="button" data-close-dialog>关闭</button></div>`;
+  $("#agent-run-dialog").showModal();
 }
 
 function renderProject() {
@@ -535,8 +553,10 @@ document.addEventListener("click", async event => {
   const copyFrameButton = event.target.closest("[data-copy-frame]");
   const deleteShotButton = event.target.closest("[data-delete-shot]");
   const shotCard = chatTargetButton ? null : event.target.closest("[data-shot-id]");
+  const agentRun = event.target.closest("[data-agent-run]");
   try {
-    if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
+    if (agentRun) await openAgentRunDetail(agentRun.dataset.agentRun);
+    else if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
     else if (stepButton && !stepButton.disabled) setStep(stepButton.dataset.step || stepButton.dataset.stepNext);
     else if (modeButton) { state.scriptMode = modeButton.dataset.scriptMode; renderScript(); }
     else if (versionButton) { state.script = state.scripts.find(s => s.id === versionButton.dataset.scriptId); renderScript(); }
@@ -592,6 +612,8 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "generate-script") await generateScript();
     else if (actionButton?.dataset.action === "approve-script") await approveScript();
     else if (actionButton?.dataset.action === "generate-shots") await generateShots();
+    else if (actionButton?.dataset.action === "open-metrics") await setStep("metrics");
+    else if (actionButton?.dataset.action === "close-metrics") await setStep(state.returnStep || "project");
     else if (actionButton?.dataset.action === "refresh-metrics") await setStep("metrics");
     else if (actionButton?.dataset.action === "generate-all-prompts") await generateAllPrompts();
     else if (promptDefaultModeButton) {

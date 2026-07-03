@@ -100,4 +100,21 @@ a fixed 4 seconds. Long continuous performances or complex blocking should norma
     try:
         return ChatAssistantDraft.model_validate(client.chat_json(system, user))
     except ValidationError as exc:
-        raise DeepSeekError("DeepSeek returned an invalid chat proposal.") from exc
+        validation_results = []
+        for issue in exc.errors(include_url=False):
+            location = ".".join(str(part) for part in issue.get("loc", ())) or "$"
+            validation_results.append(
+                {
+                    "key": "chat_schema_validation",
+                    "label": "AI 修改提案字段校验",
+                    "passed": False,
+                    "value": 0,
+                    "threshold": 1,
+                    "detail": f"字段 {location}：{issue.get('msg', '格式不正确')}",
+                }
+            )
+        raise DeepSeekError(
+            "DeepSeek returned an invalid chat proposal.",
+            error_type="schema_validation",
+            validation_results=validation_results,
+        ) from exc

@@ -127,6 +127,7 @@ class Asset(Base):
     def image_url(self) -> str | None:
         return f"/storage/{self.image_path}" if self.image_path else None
 
+
 class AssetImage(Base):
     __tablename__ = "asset_images"
 
@@ -259,6 +260,35 @@ class AgentRun(Base):
     validation_results: Mapped[list] = mapped_column(JSON, default=list)
     is_regeneration: Mapped[bool] = mapped_column(Boolean, default=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), default="deepseek")
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(64), default="v1")
+    rules_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rules_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
+    user_prompt: Mapped[str] = mapped_column(Text, default="")
+    raw_response: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StoryboardSnapshot(Base):
+    __tablename__ = "storyboard_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_storyboard_snapshot_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    script_version_id: Mapped[str] = mapped_column(ForeignKey("script_versions.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSON)
+    source: Mapped[str] = mapped_column(String(32), default="generation")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

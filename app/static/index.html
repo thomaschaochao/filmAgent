@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260703-2">
+  <link rel="stylesheet" href="/static/styles.css?v=20260703-3">
 </head>
 <body>
   <div class="app-shell">
@@ -35,7 +35,10 @@
           <span class="eyebrow">CURRENT PRODUCTION</span>
           <h1 id="current-project-title">选择一个项目</h1>
         </div>
-        <div class="topbar-meta" id="project-meta"></div>
+        <div class="topbar-actions">
+          <div class="topbar-meta" id="project-meta"></div>
+          <button class="monitor-button" type="button" data-action="open-metrics" disabled>◉ 运行监控</button>
+        </div>
       </header>
 
       <section class="workflow" aria-label="制作流程">
@@ -48,8 +51,6 @@
         <button class="workflow-step" data-step="shots" type="button"><span>04</span><div><strong>分镜设计</strong><small>镜头与场次</small></div></button>
         <i></i>
         <button class="workflow-step" data-step="prompts" type="button"><span>05</span><div><strong>提示词</strong><small>生成与管理</small></div></button>
-        <i></i>
-        <button class="workflow-step" data-step="metrics" type="button"><span>06</span><div><strong>Agent 评估</strong><small>质量与运行指标</small></div></button>
       </section>
 
       <div class="content" id="content" aria-live="polite"></div>
@@ -111,8 +112,11 @@
     <div id="chat-messages" class="chat-messages"></div>
     <form id="chat-form"><textarea id="chat-input" rows="3" required placeholder="描述你想修改的内容……"></textarea><button class="button primary" type="submit">发送</button></form>
   </aside>
+  <dialog id="agent-run-dialog" class="dialog run-detail-dialog">
+    <div id="agent-run-detail"></div>
+  </dialog>
   <div class="loading-layer" id="loading-layer" hidden><div class="loader"><div class="aperture"></div><strong id="loading-title">AI 正在工作</strong><span id="loading-copy">这可能需要一点时间，请不要关闭页面</span></div></div>
   <div class="toast-region" id="toast-region" aria-live="assertive"></div>
-  <script src="/static/app.js?v=20260703-5" defer></script>
+  <script src="/static/app.js?v=20260703-6" defer></script>
 </body>
 </html>

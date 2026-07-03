@@ -102,11 +102,11 @@ class AssetImageRead(ORMModel):
 class AssetDraft(BaseModel):
     asset_type: AssetType
     name: str = Field(min_length=1, max_length=200)
-    description: str
+    description: str = Field(min_length=3)
 
 
 class AssetExtractionDraft(BaseModel):
-    assets: list[AssetDraft]
+    assets: list[AssetDraft] = Field(min_length=1)
 
 
 class ScriptCreate(BaseModel):
@@ -134,13 +134,13 @@ class ScriptRead(ORMModel):
 
 class ShotDraft(BaseModel):
     sequence: int = Field(ge=1)
-    script_reference: str = ""
-    subject: str
-    action: str
-    environment: str
-    shot_size: str
-    camera_angle: str
-    camera_motion: str
+    script_reference: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    environment: str = Field(min_length=1)
+    shot_size: str = Field(min_length=1)
+    camera_angle: str = Field(min_length=1)
+    camera_motion: str = Field(min_length=1)
     duration_seconds: float = Field(default=4.0, ge=0.5, le=60)
     emotion: str = ""
     lighting: str = ""
@@ -151,7 +151,7 @@ class ShotDraft(BaseModel):
 
 class SceneDraft(BaseModel):
     sequence: int = Field(ge=1)
-    heading: str
+    heading: str = Field(min_length=1)
     summary: str = ""
     location: str = ""
     time_of_day: str = ""
@@ -213,7 +213,7 @@ class StoryboardFrameDraft(BaseModel):
 
 
 class PromptDraft(BaseModel):
-    positive_prompt: str
+    positive_prompt: str = Field(min_length=20)
     negative_prompt: str = ""
     model_target: str = "generic"
     subject_position: str = Field(min_length=1)
@@ -255,6 +255,33 @@ class AgentRunRead(ORMModel):
     validation_results: list[ValidationCheckRead]
     is_regeneration: bool
     error_message: str | None
+    error_type: str | None
+    provider: str
+    model: str | None
+    request_id: str | None
+    latency_ms: int | None
+    attempt_count: int
+    input_tokens: int | None
+    output_tokens: int | None
+    prompt_version: str
+    rules_version: str | None
+    created_at: datetime
+
+
+class AgentRunDetailRead(AgentRunRead):
+    system_prompt: str
+    user_prompt: str
+    raw_response: str
+    rules_snapshot: dict
+
+
+class StoryboardSnapshotRead(ORMModel):
+    id: str
+    project_id: str
+    script_version_id: str
+    version: int
+    payload: dict
+    source: str
     created_at: datetime
 
 
@@ -274,6 +301,9 @@ class AgentMetricsRead(BaseModel):
     regeneration_count: int
     validation_failed_count: int
     request_failed_count: int
+    total_input_tokens: int
+    total_output_tokens: int
+    average_latency_ms: float
     validations: list[ValidationMetricRead]
     recent_runs: list[AgentRunRead]
 

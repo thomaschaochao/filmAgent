@@ -9,8 +9,8 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260703-5" in response.text
-    assert "/static/styles.css?v=20260703-2" in response.text
+    assert "/static/app.js?v=20260703-6" in response.text
+    assert "/static/styles.css?v=20260703-3" in response.text
     assert "data-close-dialog" in response.text
 
     static_response = client.get("/static/styles.css")
@@ -26,7 +26,6 @@ def test_frontend_entrypoint(client):
     assert "delete-selected-assets" in app_response.text
     assert "select-all-assets" in app_response.text
     assert "data-delete-shot" in app_response.text
-    assert "Agent 评估" in response.text
     assert "renderMetrics" in app_response.text
     assert "data-prompt-default-mode" in app_response.text
     assert "data-shot-prompt-mode" in app_response.text
@@ -38,6 +37,11 @@ def test_frontend_entrypoint(client):
     assert "dialogueTextarea" in app_response.text
     assert 'id="chat-drawer"' in response.text
     assert 'id="chat-global-thread"' in response.text
+    assert 'data-action="open-metrics"' in response.text
+    assert 'data-step="metrics"' not in response.text
+    assert "运行监控与 Agent 评估" in app_response.text
+    assert "agent-run-dialog" in response.text
+    assert "openAgentRunDetail" in app_response.text
 
 
 def test_project_and_script_workflow(client):
@@ -133,16 +137,15 @@ def test_chat_proposal_apply_and_revert(client):
     apply_response = client.post(f"/api/v1/chat/proposals/{proposal['id']}/apply")
     assert apply_response.status_code == 200
     assert apply_response.json()["status"] == "applied"
-    assert client.get(f"/api/v1/projects/{project['id']}/assets").json()[0][
-        "description"
-    ] == "Specific"
+    assert (
+        client.get(f"/api/v1/projects/{project['id']}/assets").json()[0]["description"]
+        == "Specific"
+    )
 
     revert_response = client.post(f"/api/v1/chat/proposals/{proposal['id']}/revert")
     assert revert_response.status_code == 200
     assert revert_response.json()["status"] == "reverted"
-    assert client.get(f"/api/v1/projects/{project['id']}/assets").json()[0][
-        "description"
-    ] == "Old"
+    assert client.get(f"/api/v1/projects/{project['id']}/assets").json()[0]["description"] == "Old"
 
 
 def test_object_chat_rejects_cross_object_proposal(client):
@@ -212,9 +215,9 @@ def test_page_chat_can_create_and_revert_asset(client):
     ).json()
     proposal_id = detail["proposals"][0]["id"]
     assert client.post(f"/api/v1/chat/proposals/{proposal_id}/apply").status_code == 200
-    assert [item["name"] for item in client.get(
-        f"/api/v1/projects/{project['id']}/assets"
-    ).json()] == ["Ticket"]
+    assert [
+        item["name"] for item in client.get(f"/api/v1/projects/{project['id']}/assets").json()
+    ] == ["Ticket"]
     assert client.post(f"/api/v1/chat/proposals/{proposal_id}/revert").status_code == 200
     assert client.get(f"/api/v1/projects/{project['id']}/assets").json() == []
 
@@ -225,11 +228,16 @@ def test_global_asset_chat_receives_all_editable_assets(client, monkeypatch):
     project = client.post("/api/v1/projects", json={"name": "Global Asset Chat"}).json()
     assets = []
     for name, description in [("Hero", "Lead"), ("Car", "Red coupe")]:
-        assets.append(client.post(
-            f"/api/v1/projects/{project['id']}/assets",
-            json={"asset_type": "character" if name == "Hero" else "prop", "name": name,
-                  "description": description},
-        ).json())
+        assets.append(
+            client.post(
+                f"/api/v1/projects/{project['id']}/assets",
+                json={
+                    "asset_type": "character" if name == "Hero" else "prop",
+                    "name": name,
+                    "description": description,
+                },
+            ).json()
+        )
     thread = client.post(
         f"/api/v1/projects/{project['id']}/chat/threads",
         json={"page": "assets", "scope": "page"},
@@ -237,7 +245,9 @@ def test_global_asset_chat_receives_all_editable_assets(client, monkeypatch):
     client.post(
         f"/api/v1/projects/{project['id']}/chat/threads",
         json={
-            "page": "assets", "scope": "object", "target_type": "asset",
+            "page": "assets",
+            "scope": "object",
+            "target_type": "asset",
             "target_id": assets[0]["id"],
         },
     )
@@ -320,10 +330,14 @@ def test_chat_script_edit_creates_version_and_conflicts_do_not_overwrite(client)
             "content": "Edit",
             "proposal": {
                 "summary": "Change description",
-                "operations": [{
-                    "action": "update", "resource": "asset", "target_id": asset["id"],
-                    "values": {"description": "AI edit"},
-                }],
+                "operations": [
+                    {
+                        "action": "update",
+                        "resource": "asset",
+                        "target_id": asset["id"],
+                        "values": {"description": "AI edit"},
+                    }
+                ],
             },
         },
     ).json()
@@ -452,16 +466,14 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     monkeypatch.setattr(
         "app.main.generate_prompt",
         lambda *args, **kwargs: PromptDraft(
-            positive_prompt="existing prompt",
+            positive_prompt="existing cinematic storyboard prompt",
             subject_position="at mark",
             action_constraints="only specified action",
             spatial_constraints="inside environment",
             camera_strategy="close on key action",
         ),
     )
-    prompt_response = client.post(
-        f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate"
-    )
+    prompt_response = client.post(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate")
     assert prompt_response.status_code == 200
     assert prompt_response.json()["prompt_metadata"]["mode"] == "initial_frame"
 
@@ -476,7 +488,7 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     monkeypatch.setattr(
         "app.main.generate_prompt",
         lambda *args, **kwargs: PromptDraft(
-            positive_prompt="storyboard prompt",
+            positive_prompt="complete cinematic storyboard prompt",
             subject_position="at mark",
             action_constraints="only specified action",
             spatial_constraints="inside environment",
@@ -545,10 +557,15 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     second_generation = client.post(f"/api/v1/scripts/{script['id']}/shots/generate")
     assert second_generation.status_code == 200
     metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
-    assert metrics["total_runs"] == 2
-    assert metrics["passed_runs"] == 2
-    assert metrics["regeneration_count"] == 1
+    assert metrics["total_runs"] == 5
+    assert metrics["passed_runs"] == 5
+    assert metrics["regeneration_count"] == 3
     assert metrics["pass_rate"] == 100.0
+    snapshots = client.get(f"/api/v1/projects/{project['id']}/storyboard-snapshots").json()
+    assert [snapshot["version"] for snapshot in snapshots] == [2, 1]
+    restore = client.post(f"/api/v1/storyboard-snapshots/{snapshots[-1]['id']}/restore")
+    assert restore.status_code == 200
+    assert len(restore.json()[0]["shots"]) == 4
 
 
 def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
@@ -592,7 +609,76 @@ def test_invalid_storyboard_is_rejected_and_measured(client, monkeypatch):
     assert metrics["validation_failed_count"] == 1
     assert metrics["pass_rate"] == 0.0
     failed_keys = {
-        item["key"] for item in metrics["recent_runs"][0]["validation_results"]
+        item["key"]
+        for item in metrics["recent_runs"][0]["validation_results"]
         if not item["passed"]
     }
     assert {"scene_sequence", "script_reference_match"} <= failed_keys
+    detail = client.get(f"/api/v1/agent-runs/{metrics['recent_runs'][0]['id']}").json()
+    assert detail["error_message"]
+    assert any("实际编号" in check["detail"] for check in detail["validation_results"])
+
+
+def test_script_and_asset_operations_are_recorded(client, monkeypatch):
+    from app.schemas import AssetDraft, AssetExtractionDraft
+
+    project = client.post("/api/v1/projects", json={"name": "Metrics"}).json()
+
+    class AuditedClient:
+        def __init__(self):
+            self.attempt_count = 1
+            self.last_call = {
+                "provider": "deepseek",
+                "model": "test-model",
+                "system_prompt": "system instructions",
+                "user_prompt": "user screenplay request",
+                "raw_response": "raw generated screenplay",
+                "input_tokens": 10,
+                "output_tokens": 20,
+            }
+
+    monkeypatch.setattr("app.main.DeepSeekClient", AuditedClient)
+    monkeypatch.setattr(
+        "app.main.generate_script",
+        lambda *args, **kwargs: (
+            "A complete screenplay with scenes, action, dialogue, and a visible ending."
+        ),
+    )
+    script_response = client.post(
+        f"/api/v1/projects/{project['id']}/scripts/generate",
+        json={"brief": "A pilot returns home", "title": "Return"},
+    )
+    assert script_response.status_code == 200
+    script = script_response.json()
+    client.post(f"/api/v1/scripts/{script['id']}/approve")
+    monkeypatch.setattr(
+        "app.main.extract_assets",
+        lambda *args: AssetExtractionDraft(
+            assets=[
+                AssetDraft(asset_type="character", name="Pilot", description="middle-aged pilot")
+            ]
+        ),
+    )
+    assert client.post(f"/api/v1/projects/{project['id']}/assets/extract").status_code == 200
+    asset = client.get(f"/api/v1/projects/{project['id']}/assets").json()[0]
+    monkeypatch.setattr(
+        "app.main.generate_asset_prompt",
+        lambda *args: "Detailed character turnaround prompt with stable visible features.",
+    )
+    assert client.post(f"/api/v1/assets/{asset['id']}/prompt/generate").status_code == 200
+
+    metrics = client.get(f"/api/v1/projects/{project['id']}/agent-metrics").json()
+    operations = {run["operation"] for run in metrics["recent_runs"]}
+    assert {
+        "script_generation",
+        "asset_extraction",
+        "asset_prompt_generation",
+    } <= operations
+    script_run = next(
+        run for run in metrics["recent_runs"] if run["operation"] == "script_generation"
+    )
+    detail = client.get(f"/api/v1/agent-runs/{script_run['id']}").json()
+    assert detail["system_prompt"] == "system instructions"
+    assert detail["user_prompt"] == "user screenplay request"
+    assert detail["raw_response"] == "raw generated screenplay"
+    assert detail["input_tokens"] == 10

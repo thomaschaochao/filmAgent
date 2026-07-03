@@ -11,9 +11,7 @@ def _create_asset(client, prompt: str = "three-view character sheet") -> dict:
 
 
 def test_provider_status_never_exposes_keys(client, monkeypatch):
-    settings = Settings(
-        _env_file=None, openai_api_key="secret-openai", ark_api_key="secret-ark"
-    )
+    settings = Settings(_env_file=None, openai_api_key="secret-openai", ark_api_key="secret-ark")
     monkeypatch.setattr("app.main.get_settings", lambda: settings)
     response = client.get("/api/v1/image-providers")
     assert response.status_code == 200
@@ -49,6 +47,14 @@ def test_generate_list_select_and_delete_asset_image(client, monkeypatch):
     assert generated["local_path"].endswith(f"Pilot-{image_id[:8]}.png")
     assert generated["is_primary"] is True
 
+    metrics = client.get(f"/api/v1/projects/{asset['project_id']}/agent-metrics").json()
+    image_run = next(
+        run for run in metrics["recent_runs"] if run["operation"] == "image_generation"
+    )
+    assert image_run["provider"] == "openai"
+    assert image_run["model"] == "gpt-image-2"
+    assert image_run["status"] == "passed"
+
     upload = client.put(
         f"/api/v1/assets/{asset['id']}/image",
         content=b"uploaded-png",
@@ -60,9 +66,7 @@ def test_generate_list_select_and_delete_asset_image(client, monkeypatch):
     uploaded = next(item for item in images if item["source"] == "upload")
     assert uploaded["is_primary"] is True
 
-    selected = client.patch(
-        f"/api/v1/assets/{asset['id']}/images/{image_id}/primary"
-    )
+    selected = client.patch(f"/api/v1/assets/{asset['id']}/images/{image_id}/primary")
     assert selected.status_code == 200
     assert selected.json()["image_url"] == generated["image_url"]
 
