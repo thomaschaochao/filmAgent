@@ -9,7 +9,7 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmAgent" in response.text
-    assert "/static/app.js?v=20260703-3" in response.text
+    assert "/static/app.js?v=20260703-4" in response.text
     assert "/static/styles.css?v=20260703-2" in response.text
     assert "data-close-dialog" in response.text
 
@@ -34,7 +34,9 @@ def test_frontend_entrypoint(client):
     assert "openChat" in app_response.text
     assert "data-chat-apply" in app_response.text
     assert "chatTargetButton ? null" in app_response.text
+    assert 'query.set("scope", targetId ? "object" : "page")' in app_response.text
     assert 'id="chat-drawer"' in response.text
+    assert 'id="chat-global-thread"' in response.text
 
 
 def test_project_and_script_workflow(client):
@@ -214,6 +216,50 @@ def test_page_chat_can_create_and_revert_asset(client):
     ).json()] == ["Ticket"]
     assert client.post(f"/api/v1/chat/proposals/{proposal_id}/revert").status_code == 200
     assert client.get(f"/api/v1/projects/{project['id']}/assets").json() == []
+
+
+def test_global_asset_chat_receives_all_editable_assets(client, monkeypatch):
+    from app.schemas import ChatAssistantDraft
+
+    project = client.post("/api/v1/projects", json={"name": "Global Asset Chat"}).json()
+    assets = []
+    for name, description in [("Hero", "Lead"), ("Car", "Red coupe")]:
+        assets.append(client.post(
+            f"/api/v1/projects/{project['id']}/assets",
+            json={"asset_type": "character" if name == "Hero" else "prop", "name": name,
+                  "description": description},
+        ).json())
+    thread = client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={"page": "assets", "scope": "page"},
+    ).json()
+    client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={
+            "page": "assets", "scope": "object", "target_type": "asset",
+            "target_id": assets[0]["id"],
+        },
+    )
+    page_threads = client.get(
+        f"/api/v1/projects/{project['id']}/chat/threads?page=assets&scope=page"
+    ).json()
+    assert [item["id"] for item in page_threads] == [thread["id"]]
+    captured = {}
+
+    def fake_generate(*args, **kwargs):
+        captured.update(kwargs["context"])
+        return ChatAssistantDraft(reply="Ready for global edits")
+
+    monkeypatch.setattr("app.main.generate_chat_draft", fake_generate)
+    response = client.post(
+        f"/api/v1/chat/threads/{thread['id']}/messages",
+        json={"content": "Make all assets consistent"},
+    )
+    assert response.status_code == 200
+    assert captured["scope"] == "page"
+    assert "multiple listed items" in captured["scope_rules"]
+    assert {item["name"] for item in captured["items"]} == {"Hero", "Car"}
+    assert {item["description"] for item in captured["items"]} == {"Lead", "Red coupe"}
 
 
 def test_chat_script_edit_creates_version_and_conflicts_do_not_overwrite(client):

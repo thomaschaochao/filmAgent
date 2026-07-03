@@ -987,32 +987,48 @@ def _chat_context(db: Session, thread: ChatThread) -> dict:
         "scope": thread.scope,
         "target_type": thread.target_type,
         "target_id": thread.target_id,
+        "scope_rules": (
+            "Only modify the single target_id."
+            if thread.scope == ChatScope.object
+            else (
+                "This is a global page scope. You may propose operations for "
+                "multiple listed items."
+            )
+        ),
     }
     if thread.scope == ChatScope.object:
         context["target"] = _editable_snapshot(db, thread.target_type, thread.target_id)
         return context
     if thread.page == "assets":
         context["items"] = [
-            {"id": item.id, "type": item.asset_type, "name": item.name}
+            {"id": item.id, **_editable_snapshot(db, "asset", item.id)}
             for item in project.assets
         ]
     elif thread.page == "script":
         context["items"] = [
-            {"id": item.id, "version": item.version, "title": item.title}
+            {"id": item.id, **_editable_snapshot(db, "script", item.id)}
             for item in project.scripts
         ]
     elif thread.page == "shots":
         context["items"] = [
-            {"id": shot.id, "subject": shot.subject, "locked": shot.is_locked}
+            {
+                "id": shot.id,
+                "scene_heading": scene.heading,
+                **_editable_snapshot(db, "shot", shot.id),
+            }
             for scene in project.scenes
             for shot in scene.shots
         ]
     elif thread.page == "prompts":
         context["items"] = [
-            {"id": prompt.id, "shot_id": shot.id, "version": prompt.version}
+            {"id": prompt.id, **_editable_snapshot(db, "prompt", prompt.id)}
             for scene in project.scenes
             for shot in scene.shots
-            for prompt in shot.prompts
+            for prompt in (
+                [max(shot.prompts, key=lambda item: item.version)]
+                if shot.prompts
+                else []
+            )
         ]
     return context
 
@@ -1042,6 +1058,7 @@ def list_chat_threads(
     project_id: str,
     db: DbSession,
     page: str | None = None,
+    scope: ChatScope | None = None,
     target_id: str | None = None,
     thread_status: ChatThreadStatus | None = None,
 ) -> list[ChatThread]:
@@ -1049,6 +1066,8 @@ def list_chat_threads(
     statement = select(ChatThread).where(ChatThread.project_id == project_id)
     if page:
         statement = statement.where(ChatThread.page == page)
+    if scope:
+        statement = statement.where(ChatThread.scope == scope)
     if target_id:
         statement = statement.where(ChatThread.target_id == target_id)
     if thread_status:

@@ -107,11 +107,12 @@
   <aside id="chat-drawer" class="chat-drawer" aria-label="AI 修改助手" aria-hidden="true">
     <header><div><span class="eyebrow">AI EDITOR</span><h2 id="chat-title">与 AI 修改</h2></div><button id="chat-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
     <div class="chat-toolbar"><select id="chat-thread-select" aria-label="历史会话"></select><button id="chat-new-thread" class="button" type="button">新会话</button></div>
+    <div class="chat-scope-bar"><span id="chat-scope-label">全局页面修改</span><button id="chat-global-thread" class="button" type="button">切换到全局修改</button></div>
     <div id="chat-messages" class="chat-messages"></div>
     <form id="chat-form"><textarea id="chat-input" rows="3" required placeholder="描述你想修改的内容……"></textarea><button class="button primary" type="submit">发送</button></form>
   </aside>
   <div class="loading-layer" id="loading-layer" hidden><div class="loader"><div class="aperture"></div><strong id="loading-title">AI 正在工作</strong><span id="loading-copy">这可能需要一点时间，请不要关闭页面</span></div></div>
   <div class="toast-region" id="toast-region" aria-live="assertive"></div>
-  <script src="/static/app.js?v=20260703-3" defer></script>
+  <script src="/static/app.js?v=20260703-4" defer></script>
 </body>
 </html>

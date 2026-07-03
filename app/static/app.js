@@ -119,6 +119,7 @@ function render() {
   const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts, metrics: renderMetrics };
   views[state.step]();
   const chatAvailable = state.project && ["script", "assets", "shots", "prompts"].includes(state.step);
+  $("#chat-launcher").textContent = `全局 AI 修改 · ${chatPage()}`;
   $("#chat-launcher").hidden = !chatAvailable || $("#chat-drawer").classList.contains("open");
 }
 
@@ -369,11 +370,12 @@ new MutationObserver(injectChatTargetButtons).observe($("#content"), {
 async function openChat(targetType = null, targetId = null, title = null) {
   state.chatTarget = { targetType, targetId, title };
   const query = new URLSearchParams({ page: chatPage() });
+  query.set("scope", targetId ? "object" : "page");
   if (targetId) query.set("target_id", targetId);
   state.chatThreads = await request(`/projects/${state.project.id}/chat/threads?${query}`);
   if (!state.chatThreads.length) await createChatThread();
   else await selectChatThread(state.chatThreads[0].id);
-  $("#chat-title").textContent = title || `与 AI 修改 · ${chatPage()}`;
+  $("#chat-title").textContent = title || `全局 AI 修改 · ${chatPage()}`;
   $("#chat-drawer").classList.add("open");
   $("#chat-drawer").setAttribute("aria-hidden", "false");
   $("#chat-launcher").hidden = true;
@@ -387,7 +389,7 @@ async function createChatThread() {
     scope: target.targetId ? "object" : "page",
     target_type: target.targetType || null,
     target_id: target.targetId || null,
-    title: target.title || `新会话 · ${chatPage()}`,
+    title: target.title || `全局修改 · ${chatPage()}`,
   };
   const thread = await request(`/projects/${state.project.id}/chat/threads`, {
     method: "POST", body: JSON.stringify(payload),
@@ -407,6 +409,11 @@ function renderChat() {
     `<option value="${item.id}" ${item.id === thread?.id ? "selected" : ""}>${esc(item.title)}</option>`
   ).join("");
   if (!thread) return;
+  const globalScope = thread.scope === "page";
+  $("#chat-scope-label").textContent = globalScope
+    ? `全局修改：可同时修改本页多个${chatPage() === "assets" ? "资产" : chatPage() === "shots" ? "镜头" : "对象"}`
+    : `单对象修改：${thread.target_type} · ${thread.target_id}`;
+  $("#chat-global-thread").hidden = globalScope;
   const messages = thread.messages.map(message =>
     `<div class="chat-message ${message.role}">${esc(message.content)}</div>`
   ).join("");
@@ -442,6 +449,7 @@ document.addEventListener("keydown", event => {
   }
 });
 $("#chat-new-thread").addEventListener("click", () => createChatThread().catch(error => toast(error.message, "error")));
+$("#chat-global-thread").addEventListener("click", () => openChat(null, null, `全局 AI 修改 · ${chatPage()}`).catch(error => toast(error.message, "error")));
 $("#chat-thread-select").addEventListener("change", event => selectChatThread(event.target.value).catch(error => toast(error.message, "error")));
 $("#chat-form").addEventListener("submit", async event => {
   event.preventDefault();
