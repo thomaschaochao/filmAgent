@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, s
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.config import get_settings
@@ -958,15 +959,16 @@ def _editable_snapshot(db: Session, resource: str, target_id: str) -> dict:
     if target is None:
         raise HTTPException(status_code=404, detail=f"{resource.title()} not found")
     fields = {
-        "asset": ("asset_type", "name", "description", "prompt"),
+        "asset": ("project_id", "asset_type", "name", "description", "prompt"),
         "shot": (
-            "script_reference", "subject", "action", "environment", "shot_size",
+            "scene_id", "script_reference", "subject", "action", "environment", "shot_size",
             "camera_angle", "camera_motion", "duration_seconds", "emotion", "lighting",
             "dialogue", "narrative_purpose", "continuity", "is_locked", "sequence",
         ),
-        "script": ("title", "content", "source_type", "version"),
+        "script": ("project_id", "title", "content", "source_type", "version"),
         "prompt": (
-            "positive_prompt", "negative_prompt", "model_target", "prompt_metadata", "version",
+            "shot_id", "positive_prompt", "negative_prompt", "model_target", "prompt_metadata",
+            "version",
         ),
     }[resource]
     return {field: getattr(target, field) for field in fields}
@@ -1165,38 +1167,205 @@ def apply_chat_proposal(proposal_id: str, db: DbSession) -> ChangeProposal:
     thread = proposal.thread
     proposal.status = ProposalStatus.applying
     try:
-        operations = proposal.operations
         after: dict[str, dict] = {}
-        for raw_operation in operations:
+        results: list[dict] = []
+        before_snapshots = dict(proposal.before_snapshot)
+        model_by_resource = {"asset": Asset, "shot": Shot}
+        for raw_operation in proposal.operations:
             operation = ProposalOperation.model_validate(raw_operation)
             validate_operation_scope(thread, operation)
-            if operation.action != "update" or operation.resource not in {"asset", "shot"}:
-                raise ChatValidationError("This proposal operation is not supported yet")
-            key = f"{operation.resource}:{operation.target_id}"
-            current = _editable_snapshot(db, operation.resource, operation.target_id)
-            validate_base_version(proposal.base_version[key], current)
-            target = db.get(Asset if operation.resource == "asset" else Shot, operation.target_id)
-            allowed = set(current) - {"sequence"}
-            unknown = set(operation.values) - allowed
-            if unknown:
-                raise ChatValidationError(f"Unknown editable fields: {', '.join(sorted(unknown))}")
-            if isinstance(target, Shot) and target.is_locked:
-                raise ChatValidationError("Locked shots cannot be changed by AI")
-            for field, value in operation.values.items():
-                setattr(target, field, value)
-            db.flush()
-            after[key] = _editable_snapshot(db, operation.resource, operation.target_id)
-        proposal.after_preview = {**proposal.after_preview, "snapshots": after}
+            key = f"{operation.resource}:{operation.target_id}" if operation.target_id else None
+            if operation.action in {"update", "delete", "reorder", "create_version"}:
+                current = _editable_snapshot(db, operation.resource, operation.target_id)
+                validate_base_version(proposal.base_version[key], current)
+            if operation.action == "update" and operation.resource in model_by_resource:
+                target = db.get(model_by_resource[operation.resource], operation.target_id)
+                if isinstance(target, Shot) and target.is_locked:
+                    raise ChatValidationError("Locked shots cannot be changed by AI")
+                protected = {"project_id", "scene_id", "sequence"}
+                unknown = set(operation.values) - (set(current) - protected)
+                if unknown:
+                    raise ChatValidationError(
+                        f"Unknown editable fields: {', '.join(sorted(unknown))}"
+                    )
+                for field, value in operation.values.items():
+                    setattr(target, field, value)
+                db.flush()
+                after[key] = _editable_snapshot(db, operation.resource, operation.target_id)
+                results.append(
+                    {
+                        "action": "update",
+                        "resource": operation.resource,
+                        "id": operation.target_id,
+                    }
+                )
+            elif operation.action == "create" and operation.resource == "asset":
+                allowed = {"asset_type", "name", "description", "prompt"}
+                has_required = {"asset_type", "name"} <= set(operation.values)
+                if not has_required or set(operation.values) - allowed:
+                    raise ChatValidationError("Asset creation requires valid type and name")
+                target = Asset(project_id=thread.project_id, **operation.values)
+                db.add(target)
+                db.flush()
+                created_key = f"asset:{target.id}"
+                after[created_key] = _editable_snapshot(db, "asset", target.id)
+                results.append({"action": "create", "resource": "asset", "id": target.id})
+            elif operation.action == "create" and operation.resource == "shot":
+                scene_id = operation.values.get("scene_id")
+                scene = db.get(Scene, scene_id)
+                if scene is None or scene.project_id != thread.project_id:
+                    raise ChatValidationError("Shot scene is outside the project")
+                values = {**operation.values}
+                values.pop("scene_id", None)
+                allowed = {
+                    "sequence", "script_reference", "subject", "action", "environment",
+                    "shot_size", "camera_angle", "camera_motion", "duration_seconds",
+                    "emotion", "lighting", "dialogue", "narrative_purpose", "continuity",
+                }
+                required = {"subject", "action", "environment"}
+                if set(values) - allowed or not required <= set(values):
+                    raise ChatValidationError("Shot creation contains invalid or missing fields")
+                values.setdefault(
+                    "sequence",
+                    (
+                        db.scalar(
+                            select(func.max(Shot.sequence)).where(Shot.scene_id == scene.id)
+                        )
+                        or 0
+                    ) + 1,
+                )
+                target = Shot(scene_id=scene.id, **values)
+                db.add(target)
+                db.flush()
+                created_key = f"shot:{target.id}"
+                after[created_key] = _editable_snapshot(db, "shot", target.id)
+                results.append({"action": "create", "resource": "shot", "id": target.id})
+            elif operation.action == "delete" and operation.resource in model_by_resource:
+                target = db.get(model_by_resource[operation.resource], operation.target_id)
+                if isinstance(target, Shot) and target.is_locked:
+                    raise ChatValidationError("Locked shots cannot be deleted by AI")
+                if isinstance(target, Shot) and target.prompts:
+                    raise ChatValidationError("Shots with prompt history cannot be safely deleted")
+                if isinstance(target, Asset) and target.images:
+                    raise ChatValidationError("Assets with image history cannot be safely deleted")
+                db.delete(target)
+                db.flush()
+                after[key] = {"deleted": True}
+                results.append(
+                    {
+                        "action": "delete",
+                        "resource": operation.resource,
+                        "id": operation.target_id,
+                    }
+                )
+            elif operation.action == "reorder" and operation.resource == "shot":
+                target = db.get(Shot, operation.target_id)
+                if target.is_locked:
+                    raise ChatValidationError("Locked shots cannot be reordered by AI")
+                new_sequence = operation.values.get("sequence")
+                if not isinstance(new_sequence, int) or new_sequence < 1:
+                    raise ChatValidationError("Shot reorder requires a positive sequence")
+                other = db.scalar(
+                    select(Shot).where(
+                        Shot.scene_id == target.scene_id,
+                        Shot.sequence == new_sequence,
+                        Shot.id != target.id,
+                    )
+                )
+                old_sequence = target.sequence
+                other_id = other.id if other else None
+                if other:
+                    other_key = f"shot:{other.id}"
+                    before_snapshots[other_key] = _editable_snapshot(db, "shot", other.id)
+                target.sequence = -1
+                db.flush()
+                if other:
+                    other.sequence = old_sequence
+                target.sequence = new_sequence
+                db.flush()
+                after[key] = _editable_snapshot(db, "shot", target.id)
+                if other:
+                    after[other_key] = _editable_snapshot(db, "shot", other.id)
+                results.append(
+                    {
+                        "action": "reorder",
+                        "resource": "shot",
+                        "id": target.id,
+                        "other_id": other_id,
+                    }
+                )
+            elif operation.action == "create_version" and operation.resource == "script":
+                source = db.get(ScriptVersion, operation.target_id)
+                allowed = {"title", "content"}
+                if set(operation.values) - allowed or not operation.values.get("content"):
+                    raise ChatValidationError("Script versions require valid title/content values")
+                latest = db.scalar(
+                    select(func.max(ScriptVersion.version)).where(
+                        ScriptVersion.project_id == source.project_id
+                    )
+                )
+                target = ScriptVersion(
+                    project_id=source.project_id,
+                    version=(latest or 0) + 1,
+                    title=operation.values.get("title", source.title),
+                    content=operation.values["content"],
+                    source_type="ai_chat",
+                )
+                db.add(target)
+                db.flush()
+                created_key = f"script:{target.id}"
+                after[created_key] = _editable_snapshot(db, "script", target.id)
+                results.append({"action": "create_version", "resource": "script", "id": target.id})
+            elif operation.action == "create_version" and operation.resource == "prompt":
+                source = db.get(PromptVersion, operation.target_id)
+                if source.shot.is_locked:
+                    raise ChatValidationError("Locked shots cannot receive AI prompt versions")
+                allowed = {"positive_prompt", "negative_prompt", "model_target", "prompt_metadata"}
+                if set(operation.values) - allowed or not operation.values.get("positive_prompt"):
+                    raise ChatValidationError("Prompt versions require a positive prompt")
+                latest = db.scalar(
+                    select(func.max(PromptVersion.version)).where(
+                        PromptVersion.shot_id == source.shot_id
+                    )
+                )
+                target = PromptVersion(
+                    shot_id=source.shot_id,
+                    version=(latest or 0) + 1,
+                    positive_prompt=operation.values["positive_prompt"],
+                    negative_prompt=operation.values.get("negative_prompt", source.negative_prompt),
+                    model_target=operation.values.get("model_target", source.model_target),
+                    prompt_metadata=operation.values.get("prompt_metadata", source.prompt_metadata),
+                )
+                db.add(target)
+                db.flush()
+                created_key = f"prompt:{target.id}"
+                after[created_key] = _editable_snapshot(db, "prompt", target.id)
+                results.append({"action": "create_version", "resource": "prompt", "id": target.id})
+            else:
+                raise ChatValidationError("Unsupported proposal operation")
+        proposal.before_snapshot = before_snapshots
+        proposal.after_preview = {
+            **proposal.after_preview,
+            "snapshots": after,
+            "results": results,
+        }
         proposal.status = ProposalStatus.applied
         proposal.applied_at = datetime.now(UTC)
         db.commit()
-    except (ChatValidationError, KeyError, ValueError) as exc:
+    except (ChatValidationError, KeyError, TypeError, ValueError) as exc:
         db.rollback()
         proposal = require_proposal(db, proposal_id)
         proposal.status = ProposalStatus.failed
         proposal.error_message = str(exc)
         db.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        proposal = require_proposal(db, proposal_id)
+        proposal.status = ProposalStatus.failed
+        proposal.error_message = "Proposal violates a data uniqueness constraint"
+        db.commit()
+        raise HTTPException(status_code=409, detail=proposal.error_message) from exc
     db.refresh(proposal)
     return proposal
 
@@ -1221,12 +1390,53 @@ def revert_chat_proposal(proposal_id: str, db: DbSession) -> ChangeProposal:
         )
     try:
         after = proposal.after_preview.get("snapshots", {})
-        for key, before_snapshot in proposal.before_snapshot.items():
-            resource, target_id = key.split(":", 1)
+        results = proposal.after_preview.get("results", [])
+        model_by_resource = {"asset": Asset, "shot": Shot}
+        for result in reversed(results):
+            resource = result["resource"]
+            target_id = result["id"]
+            key = f"{resource}:{target_id}"
+            action = result["action"]
+            if action in {"create", "create_version"}:
+                validate_base_version(after[key], _editable_snapshot(db, resource, target_id))
+                model = {
+                    "asset": Asset,
+                    "shot": Shot,
+                    "script": ScriptVersion,
+                    "prompt": PromptVersion,
+                }[resource]
+                db.delete(db.get(model, target_id))
+                db.flush()
+                continue
+            before_snapshot = proposal.before_snapshot[key]
+            if action == "delete":
+                if _chat_target_project_id(db, resource, target_id) is not None:
+                    raise ChatValidationError("Deleted object ID is already in use")
+                target = model_by_resource[resource](id=target_id, **before_snapshot)
+                db.add(target)
+                db.flush()
+                continue
             validate_base_version(after[key], _editable_snapshot(db, resource, target_id))
-            target = db.get(Asset if resource == "asset" else Shot, target_id)
+            target = db.get(model_by_resource[resource], target_id)
+            if action == "reorder":
+                other_id = result.get("other_id")
+                if other_id:
+                    other_key = f"shot:{other_id}"
+                    validate_base_version(
+                        after[other_key], _editable_snapshot(db, "shot", other_id)
+                    )
+                    other = db.get(Shot, other_id)
+                    other.sequence = -2
+                target.sequence = -1
+                db.flush()
+                if other_id:
+                    for field, value in proposal.before_snapshot[other_key].items():
+                        if field not in {"scene_id"}:
+                            setattr(other, field, value)
             for field, value in before_snapshot.items():
-                setattr(target, field, value)
+                if field not in {"project_id", "scene_id"}:
+                    setattr(target, field, value)
+            db.flush()
         proposal.status = ProposalStatus.reverted
         proposal.reverted_at = datetime.now(UTC)
         db.commit()

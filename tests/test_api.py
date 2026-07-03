@@ -180,6 +180,112 @@ def test_object_chat_rejects_cross_object_proposal(client):
     assert response.status_code == 422
 
 
+def test_page_chat_can_create_and_revert_asset(client):
+    project = client.post("/api/v1/projects", json={"name": "Create Asset Chat"}).json()
+    thread = client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={"page": "assets", "scope": "page"},
+    ).json()
+    detail = client.post(
+        f"/api/v1/chat/threads/{thread['id']}/messages",
+        json={
+            "content": "Add a prop",
+            "proposal": {
+                "summary": "Add ticket",
+                "operations": [
+                    {
+                        "action": "create",
+                        "resource": "asset",
+                        "values": {
+                            "asset_type": "prop",
+                            "name": "Ticket",
+                            "description": "Paper ticket",
+                        },
+                    }
+                ],
+            },
+        },
+    ).json()
+    proposal_id = detail["proposals"][0]["id"]
+    assert client.post(f"/api/v1/chat/proposals/{proposal_id}/apply").status_code == 200
+    assert [item["name"] for item in client.get(
+        f"/api/v1/projects/{project['id']}/assets"
+    ).json()] == ["Ticket"]
+    assert client.post(f"/api/v1/chat/proposals/{proposal_id}/revert").status_code == 200
+    assert client.get(f"/api/v1/projects/{project['id']}/assets").json() == []
+
+
+def test_chat_script_edit_creates_version_and_conflicts_do_not_overwrite(client):
+    project = client.post("/api/v1/projects", json={"name": "Version Chat"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "V1", "content": "Original"},
+    ).json()
+    script_thread = client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={
+            "page": "script",
+            "scope": "object",
+            "target_type": "script",
+            "target_id": script["id"],
+        },
+    ).json()
+    detail = client.post(
+        f"/api/v1/chat/threads/{script_thread['id']}/messages",
+        json={
+            "content": "Rewrite",
+            "proposal": {
+                "summary": "Create V2",
+                "operations": [
+                    {
+                        "action": "create_version",
+                        "resource": "script",
+                        "target_id": script["id"],
+                        "values": {"title": "V2", "content": "Rewritten"},
+                    }
+                ],
+            },
+        },
+    ).json()
+    proposal_id = detail["proposals"][0]["id"]
+    assert client.post(f"/api/v1/chat/proposals/{proposal_id}/apply").status_code == 200
+    scripts = client.get(f"/api/v1/projects/{project['id']}/scripts").json()
+    assert [item["version"] for item in scripts] == [2, 1]
+    assert client.post(f"/api/v1/chat/proposals/{proposal_id}/revert").status_code == 200
+
+    asset = client.post(
+        f"/api/v1/projects/{project['id']}/assets",
+        json={"asset_type": "character", "name": "Hero", "description": "Old"},
+    ).json()
+    asset_thread = client.post(
+        f"/api/v1/projects/{project['id']}/chat/threads",
+        json={
+            "page": "assets",
+            "scope": "object",
+            "target_type": "asset",
+            "target_id": asset["id"],
+        },
+    ).json()
+    detail = client.post(
+        f"/api/v1/chat/threads/{asset_thread['id']}/messages",
+        json={
+            "content": "Edit",
+            "proposal": {
+                "summary": "Change description",
+                "operations": [{
+                    "action": "update", "resource": "asset", "target_id": asset["id"],
+                    "values": {"description": "AI edit"},
+                }],
+            },
+        },
+    ).json()
+    client.patch(f"/api/v1/assets/{asset['id']}", json={"description": "Manual edit"})
+    conflict = client.post(f"/api/v1/chat/proposals/{detail['proposals'][0]['id']}/apply")
+    assert conflict.status_code == 409
+    current = client.get(f"/api/v1/projects/{project['id']}/assets").json()[0]
+    assert current["description"] == "Manual edit"
+
+
 def test_asset_crud_and_reference_image_upload(client):
     project = client.post("/api/v1/projects", json={"name": "Asset Test"}).json()
     create_response = client.post(
