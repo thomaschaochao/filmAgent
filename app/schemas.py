@@ -334,6 +334,11 @@ class ChatMessageCreate(BaseModel):
     proposal: ChangeProposalDraft | None = None
 
 
+class ChatAssistantDraft(BaseModel):
+    reply: str = Field(min_length=1)
+    proposal: ChangeProposalDraft | None = None
+
+
 class ChatThreadRead(ORMModel):
     id: str
     project_id: str

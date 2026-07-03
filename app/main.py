@@ -59,6 +59,7 @@ from app.schemas import (
 )
 from app.services.chat import (
     ChatValidationError,
+    generate_chat_draft,
     validate_base_version,
     validate_operation_scope,
 )
@@ -971,6 +972,49 @@ def _editable_snapshot(db: Session, resource: str, target_id: str) -> dict:
     return {field: getattr(target, field) for field in fields}
 
 
+def _chat_context(db: Session, thread: ChatThread) -> dict:
+    project = thread.project
+    context = {
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            "visual_style": project.visual_style,
+            "world_setting": project.world_setting,
+        },
+        "page": thread.page,
+        "scope": thread.scope,
+        "target_type": thread.target_type,
+        "target_id": thread.target_id,
+    }
+    if thread.scope == ChatScope.object:
+        context["target"] = _editable_snapshot(db, thread.target_type, thread.target_id)
+        return context
+    if thread.page == "assets":
+        context["items"] = [
+            {"id": item.id, "type": item.asset_type, "name": item.name}
+            for item in project.assets
+        ]
+    elif thread.page == "script":
+        context["items"] = [
+            {"id": item.id, "version": item.version, "title": item.title}
+            for item in project.scripts
+        ]
+    elif thread.page == "shots":
+        context["items"] = [
+            {"id": shot.id, "subject": shot.subject, "locked": shot.is_locked}
+            for scene in project.scenes
+            for shot in scene.shots
+        ]
+    elif thread.page == "prompts":
+        context["items"] = [
+            {"id": prompt.id, "shot_id": shot.id, "version": prompt.version}
+            for scene in project.scenes
+            for shot in scene.shots
+            for prompt in shot.prompts
+        ]
+    return context
+
+
 @app.post(
     f"{API}/projects/{{project_id}}/chat/threads",
     response_model=ChatThreadRead,
@@ -1026,6 +1070,24 @@ def get_chat_thread(thread_id: str, db: DbSession) -> ChatThread:
 @app.post(f"{API}/chat/threads/{{thread_id}}/messages", response_model=ChatThreadDetail)
 def create_chat_message(thread_id: str, payload: ChatMessageCreate, db: DbSession) -> ChatThread:
     thread = require_chat_thread(db, thread_id)
+    proposal_draft = payload.proposal
+    assistant_content = "已生成结构化修改提案。" if proposal_draft else ""
+    if proposal_draft is None:
+        history = [
+            {"role": message.role, "content": message.content}
+            for message in thread.messages[-10:]
+        ]
+        try:
+            draft = generate_chat_draft(
+                DeepSeekClient(),
+                context=_chat_context(db, thread),
+                history=history,
+                instruction=payload.content,
+            )
+        except (DeepSeekError, RuntimeError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        proposal_draft = draft.proposal
+        assistant_content = draft.reply
     user_message = ChatMessage(
         thread_id=thread.id,
         role=ChatMessageRole.user,
@@ -1037,15 +1099,15 @@ def create_chat_message(thread_id: str, payload: ChatMessageCreate, db: DbSessio
     assistant = ChatMessage(
         thread_id=thread.id,
         role=ChatMessageRole.assistant,
-        content=("已生成结构化修改提案。" if payload.proposal else "已记录你的修改意图。"),
-        context_summary={"deterministic": True},
+        content=assistant_content,
+        context_summary={"deterministic": payload.proposal is not None},
     )
     db.add(assistant)
     db.flush()
-    if payload.proposal:
+    if proposal_draft:
         before: dict[str, dict] = {}
         base: dict[str, dict] = {}
-        for operation in payload.proposal.operations:
+        for operation in proposal_draft.operations:
             try:
                 validate_operation_scope(thread, operation)
             except ChatValidationError as exc:
@@ -1073,9 +1135,9 @@ def create_chat_message(thread_id: str, payload: ChatMessageCreate, db: DbSessio
                     "target_type": thread.target_type,
                     "target_id": thread.target_id,
                 },
-                operations=[operation.model_dump() for operation in payload.proposal.operations],
+                operations=[operation.model_dump() for operation in proposal_draft.operations],
                 before_snapshot=before,
-                after_preview={"summary": payload.proposal.summary},
+                after_preview={"summary": proposal_draft.summary},
                 base_version=base,
             )
         )
