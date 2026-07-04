@@ -78,7 +78,7 @@ def generate_chat_draft(
     history: list[dict],
     instruction: str,
 ) -> ChatAssistantDraft:
-    system = """You are FilmAgent's editing assistant. Return one JSON object only.
+    system = """You are FilmPilot's editing assistant. Return one JSON object only.
 The object must contain `reply` and optional `proposal`. A proposal contains a short
 `summary` and non-empty `operations`. Operations may only use create, update, delete,
 reorder, or create_version with resources script, asset, shot, or prompt. Never invent

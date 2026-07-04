@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "FilmAgent"
+    app_name: str = "FilmPilot"
     database_url: str = "sqlite:///./data/filmagent.db"
     deepseek_api_key: SecretStr | None = None
     deepseek_api_key_file: Path = Path("deepseekapi.txt")

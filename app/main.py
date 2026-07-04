@@ -124,7 +124,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="FilmAgent API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="FilmPilot API", version="0.1.0", lifespan=lifespan)
 API = "/api/v1"
 DbSession = Annotated[Session, Depends(get_db)]
 STATIC_DIR = Path(__file__).parent / "static"

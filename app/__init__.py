@@ -1,1 +1,1 @@
-"""FilmAgent application package."""
+"""FilmPilot application package."""

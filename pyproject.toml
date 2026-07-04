@@ -1,7 +1,7 @@
 [project]
-name = "filmagent"
+name = "filmpilot"
 version = "0.1.0"
-description = "Local-first screenplay to storyboard prompt workflow"
+description = "Local-first AI filmmaking pre-production workspace"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1.0",
