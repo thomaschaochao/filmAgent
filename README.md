@@ -2,19 +2,23 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) · **v1.0.0**
 
-FilmPilot is a local-first AI workspace for filmmaking pre-production. It turns a screenplay into structured scenes and shots, manages reusable visual assets, generates production prompts, and lets creators review AI-proposed edits before applying them.
+FilmPilot is a **locally run companion for AI video generation**. It prepares and manages the creative material that video-generation models need: characters, scenes, scripts, shot lists, reference images, and production-ready prompts. FilmPilot does not replace a video-generation model; it helps creators build consistent inputs and a repeatable workflow before sending shots to one.
+
+Its main goal is to keep character and visual assets consistent across a project while assisting screenplay development, asset-prompt writing, shot breakdown, and shot-image prompt generation.
 
 ## Features
 
-- Create, version, approve, and AI-generate screenplays.
-- Extract and manage character, location, and prop assets.
-- Generate structured storyboards with dialogue-aware shot durations.
+- **Local project workspace:** run the application and retain project data, generated files, and credentials on your own machine.
+- **Character and asset management:** extract, create, and manage reusable characters, locations, props, and their reference images.
+- **Screenplay assistance:** create, version, approve, generate, and revise screenplays with AI assistance.
+- **Asset prompt assistance:** generate consistent prompts for character designs, scene/location designs, and key props.
+- **Shot breakdown assistance:** turn an approved screenplay into structured scenes and shots with dialogue-aware durations.
 - Repair references, numbering, and duplicate shots locally before validation.
-- Generate initial-frame and multi-frame storyboard prompts.
+- **Shot prompt assistance — Initial Frame mode:** generate a prompt for the single opening image of a shot.
+- **Shot prompt assistance — Storyboard mode:** generate a 4-, 6-, or 9-frame sequential storyboard prompt showing the shot's visual progression.
 - Generate asset reference images with GPT Image or Seedream.
 - Use scoped AI chat to propose, review, apply, and revert project edits.
 - Inspect model calls, validation results, latency, and token usage.
-- Keep project data, generated files, and API credentials on your machine.
 
 ## Technology and architecture
 
