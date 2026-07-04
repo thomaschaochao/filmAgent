@@ -1,8 +1,15 @@
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from app.config import Settings
+from app.version import __version__
+
+
+def test_package_and_application_versions_match():
+    metadata = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert metadata["project"]["version"] == __version__
 
 
 def test_reads_api_key_from_file_without_exposing_it(tmp_path: Path):

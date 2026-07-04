@@ -1,0 +1,116 @@
+# FilmPilot
+
+[English](README.md) | [简体中文](README.zh-CN.md) · **v1.0.0**
+
+FilmPilot 是一个本地优先的 AI 影视前期制作工作台。它可以把剧本转换成结构化场次与镜头，管理可复用视觉资产，生成制作提示词，并允许创作者在应用 AI 修改前审核变更方案。
+
+## 核心功能
+
+- 创建、版本化、确认及 AI 生成剧本。
+- 提取和管理人物、场景、道具资产。
+- 生成结构化分镜，并根据对白与动作安排镜头时长。
+- 在校验前使用本地逻辑修复引用、编号和重复镜头。
+- 生成首帧提示词和多格连续帧故事板提示词。
+- 使用 GPT Image 或 Seedream 生成资产参考图。
+- 通过限定作用域的 AI 聊天提出、审核、应用和撤销项目修改。
+- 查看模型调用、校验结果、延迟和 Token 使用量。
+- 将项目数据、生成文件和 API 凭证保存在本机。
+
+## 技术栈与架构
+
+- **后端：** Python 3.11+、FastAPI、Pydantic、SQLAlchemy
+- **前端：** 原生 JavaScript、HTML 和 CSS，无需前端构建步骤
+- **存储：** SQLite 与本地文件系统
+- **AI 服务：** DeepSeek 负责文本工作流；OpenAI GPT Image 和火山引擎 Seedream 提供可选图片生成
+- **质量工具：** Pytest、Ruff
+
+```mermaid
+flowchart LR
+    UI[浏览器界面] --> API[FastAPI 应用]
+    API --> WF[工作流与聊天服务]
+    WF --> DS[DeepSeek]
+    WF --> IMG[GPT Image / Seedream]
+    API --> DB[(SQLite)]
+    API --> FS[本地资产存储]
+```
+
+FilmPilot 采用本地优先的单体架构：浏览器界面和 REST API 由同一个 FastAPI 进程提供。服务模块负责模型编排与确定性校验，SQLAlchemy 保存项目、剧本、镜头、资产、提示词、聊天修改方案、快照和 Agent 运行指标。
+
+## 环境要求
+
+- Python 3.11 或更高版本
+- `pip` 和 Python 虚拟环境
+- DeepSeek API Key，用于剧本、分镜、提示词和聊天生成
+- 可选的 OpenAI 或火山方舟凭证，用于图片生成
+
+## 安装
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/thomaschaochao/FilmPilot.git
+cd FilmPilot
+py -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
+Copy-Item config.local.env.example config.local.env
+```
+
+### macOS 与 Linux
+
+```bash
+git clone https://github.com/thomaschaochao/FilmPilot.git
+cd FilmPilot
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+cp config.local.env.example config.local.env
+```
+
+打开 `config.local.env`，填写需要使用的服务凭证：
+
+```dotenv
+FILMAGENT_DEEPSEEK_API_KEY=your_deepseek_key
+FILMAGENT_OPENAI_API_KEY=your_openai_key
+FILMAGENT_ARK_API_KEY=your_volcengine_ark_key
+```
+
+为兼容已有安装，环境变量继续使用 `FILMAGENT_*` 前缀。不要提交 `config.local.env` 或任何真实 API Key。
+
+## 启动
+
+Windows：
+
+```powershell
+.venv\Scripts\python -m uvicorn app.main:app --reload
+```
+
+macOS 与 Linux：
+
+```bash
+.venv/bin/python -m uvicorn app.main:app --reload
+```
+
+访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。交互式 API 文档位于 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)，健康检查接口为 `/api/v1/health`。
+
+## 数据与安全
+
+- SQLite 数据默认保存在 `data/`。
+- 生成及上传文件保存在 `storage/`。
+- `.env`、`config.local.env`、`deepseekapi.txt`、数据库、生成文件、缓存和测试产物均被 Git 忽略。
+- 服务商密钥仅在服务端读取，不会通过 API 响应返回。
+- 升级或迁移安装前，请备份 `data/` 和 `storage/`。
+
+## 开发与测试
+
+```powershell
+.venv\Scripts\ruff check app tests
+.venv\Scripts\pytest
+node --check app/static/app.js
+```
+
+在 macOS 或 Linux 上，将 `.venv\Scripts\` 替换为 `.venv/bin/`。
+
+FilmPilot 遵循[语义化版本](https://semver.org/lang/zh-CN/)：修复版本使用 `1.0.x`，向后兼容的新功能使用 `1.x.0`，破坏性变更升级主版本。版本记录参见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可证
+
+FilmPilot 使用 [MIT License](LICENSE) 发布。

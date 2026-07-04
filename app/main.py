@@ -83,6 +83,7 @@ from app.services.workflow import (
     storyboard_frame_count_for_duration,
     validate_storyboard,
 )
+from app.version import __version__
 
 
 @asynccontextmanager
@@ -124,7 +125,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="FilmPilot API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="FilmPilot API", version=__version__, lifespan=lifespan)
 API = "/api/v1"
 DbSession = Annotated[Session, Depends(get_db)]
 STATIC_DIR = Path(__file__).parent / "static"
@@ -420,7 +421,7 @@ def _asset_identity(asset_type: str, name: str) -> tuple[str, str]:
 
 @app.get(f"{API}/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": __version__}
 
 
 @app.get(f"{API}/image-providers", response_model=list[ImageProviderRead])

@@ -1,53 +1,116 @@
-# FilmAgent
+# FilmPilot
 
-FilmAgent 是一个本地优先的剧本到故事板提示词工作流。第一版覆盖：
+[English](README.md) | [简体中文](README.zh-CN.md) · **v1.0.0**
 
-1. 创建项目并保存剧本版本；
-2. 使用 DeepSeek 生成或改写剧本；
-3. 将已确认剧本拆解为结构化场次和分镜；
-4. 管理人物、场景和道具资产，并使用 GPT Image 2 或 Seedream 生成参考图；
-5. 编辑分镜并生成故事板图片提示词；
-6. 所有中间数据保存在本地 SQLite。
+FilmPilot is a local-first AI workspace for filmmaking pre-production. It turns a screenplay into structured scenes and shots, manages reusable visual assets, generates production prompts, and lets creators review AI-proposed edits before applying them.
 
-## 安全约定
+## Features
 
-- `config.local.env`、`deepseekapi.txt`、`.env` 和本地数据库均不会进入 Git；
-- API Key 只在服务端发送供应商请求时读取；
-- 日志和接口响应不会返回 Key；
-- 仓库仅提供不含真实密钥的配置模板。
+- Create, version, approve, and AI-generate screenplays.
+- Extract and manage character, location, and prop assets.
+- Generate structured storyboards with dialogue-aware shot durations.
+- Repair references, numbering, and duplicate shots locally before validation.
+- Generate initial-frame and multi-frame storyboard prompts.
+- Generate asset reference images with GPT Image or Seedream.
+- Use scoped AI chat to propose, review, apply, and revert project edits.
+- Inspect model calls, validation results, latency, and token usage.
+- Keep project data, generated files, and API credentials on your machine.
 
-## 配置 API Key
+## Technology and architecture
 
-复制 `config.local.env.example` 为 `config.local.env`，然后在这个文件中填写需要使用的 DeepSeek、OpenAI 或火山方舟 Key。没有填写 Key 的供应商会在界面中显示为不可用。
+- **Backend:** Python 3.11+, FastAPI, Pydantic, SQLAlchemy
+- **Frontend:** Vanilla JavaScript, HTML, and CSS; no frontend build step
+- **Storage:** SQLite plus local filesystem storage
+- **AI providers:** DeepSeek for text workflows; OpenAI GPT Image and Volcengine Seedream for optional image generation
+- **Quality:** Pytest and Ruff
 
-修改配置后需要重启 FilmAgent。旧的 `deepseekapi.txt` 仍可继续使用。
+```mermaid
+flowchart LR
+    UI[Browser UI] --> API[FastAPI application]
+    API --> WF[Workflow and chat services]
+    WF --> DS[DeepSeek]
+    WF --> IMG[GPT Image / Seedream]
+    API --> DB[(SQLite)]
+    API --> FS[Local asset storage]
+```
 
-## 本地启动
+FilmPilot is a local-first monolith: the browser UI and REST API are served by one FastAPI process. Service modules isolate model orchestration and deterministic validation, while SQLAlchemy persists projects, scripts, shots, assets, prompts, chat proposals, snapshots, and agent-run metrics.
+
+## Requirements
+
+- Python 3.11 or newer
+- `pip` and Python virtual environments
+- A DeepSeek API key for screenplay, storyboard, prompt, and chat generation
+- Optional OpenAI or Volcengine Ark credentials for image generation
+
+## Installation
+
+### Windows PowerShell
 
 ```powershell
+git clone https://github.com/thomaschaochao/FilmPilot.git
+cd FilmPilot
 py -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
+Copy-Item config.local.env.example config.local.env
+```
+
+### macOS and Linux
+
+```bash
+git clone https://github.com/thomaschaochao/FilmPilot.git
+cd FilmPilot
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+cp config.local.env.example config.local.env
+```
+
+Open `config.local.env` and add the provider keys you intend to use:
+
+```dotenv
+FILMAGENT_DEEPSEEK_API_KEY=your_deepseek_key
+FILMAGENT_OPENAI_API_KEY=your_openai_key
+FILMAGENT_ARK_API_KEY=your_volcengine_ark_key
+```
+
+The `FILMAGENT_*` prefix is retained for compatibility with existing FilmPilot installations. Never commit `config.local.env` or real API keys.
+
+## Run
+
+Windows:
+
+```powershell
 .venv\Scripts\python -m uvicorn app.main:app --reload
 ```
 
-默认地址为 `http://127.0.0.1:8000`，接口文档位于 `/docs`。
+macOS and Linux:
 
-## 当前 API
+```bash
+.venv/bin/python -m uvicorn app.main:app --reload
+```
 
-- `GET /api/v1/health`
-- `GET /api/v1/image-providers`
-- `POST /api/v1/projects`
-- `GET /api/v1/projects`
-- `GET /api/v1/projects/{project_id}`
-- `POST /api/v1/projects/{project_id}/scripts`
-- `POST /api/v1/projects/{project_id}/scripts/generate`
-- `POST /api/v1/scripts/{script_id}/approve`
-- `POST /api/v1/scripts/{script_id}/shots/generate`
-- `GET /api/v1/projects/{project_id}/scenes`
-- `GET /api/v1/assets/{asset_id}/images`
-- `POST /api/v1/assets/{asset_id}/images/generate`
-- `PATCH /api/v1/assets/{asset_id}/images/{image_id}/primary`
-- `DELETE /api/v1/assets/{asset_id}/images/{image_id}`
-- `PATCH /api/v1/shots/{shot_id}`
-- `POST /api/v1/shots/{shot_id}/prompts/generate`
-- `GET /api/v1/shots/{shot_id}/prompts`
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Interactive API documentation is available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs), and the health endpoint is `/api/v1/health`.
+
+## Data and security
+
+- SQLite data is stored under `data/` by default.
+- Generated and uploaded files are stored under `storage/`.
+- `.env`, `config.local.env`, `deepseekapi.txt`, databases, generated files, caches, and test artifacts are ignored by Git.
+- Provider keys are only read server-side and are not returned by API responses.
+- Back up `data/` and `storage/` before upgrading or moving an installation.
+
+## Development
+
+```powershell
+.venv\Scripts\ruff check app tests
+.venv\Scripts\pytest
+node --check app/static/app.js
+```
+
+On macOS or Linux, replace `.venv\Scripts\` with `.venv/bin/`.
+
+FilmPilot follows [Semantic Versioning](https://semver.org/): patches use `1.0.x`, backward-compatible features use `1.x.0`, and breaking changes increment the major version. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## License
+
+FilmPilot is released under the [MIT License](LICENSE).
