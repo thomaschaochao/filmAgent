@@ -4,12 +4,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models import (
+    AgentSessionStatus,
     ChatMessageRole,
     ChatPage,
     ChatScope,
     ChatThreadStatus,
     ProjectStatus,
     ProposalStatus,
+    WorkflowTaskStatus,
 )
 
 
@@ -410,3 +412,103 @@ class ChangeProposalRead(ORMModel):
 class ChatThreadDetail(ChatThreadRead):
     messages: list[ChatMessageRead]
     proposals: list[ChangeProposalRead]
+
+
+class AgentSessionCreate(BaseModel):
+    title: str = Field(default="新的影片计划", min_length=1, max_length=200)
+    initial_input: str = ""
+
+
+class AgentMessageCreate(BaseModel):
+    content: str = Field(min_length=1)
+    facts: dict[str, str] = Field(default_factory=dict)
+
+
+class AgentMessageRead(ORMModel):
+    id: str
+    session_id: str
+    role: ChatMessageRole
+    content: str
+    metadata_json: dict
+    created_at: datetime
+
+
+class CreativeMemoryRead(ORMModel):
+    id: str
+    category: str
+    key: str
+    value: str
+    status: str
+    source_type: str
+    source_reference: str | None
+    confidence: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkflowTaskRead(ORMModel):
+    id: str
+    sequence: int
+    stage: str
+    operation: str
+    status: WorkflowTaskStatus
+    input_data: dict
+    result_data: dict
+    error_message: str | None
+    retry_count: int
+
+
+class WorkflowPlanRead(ORMModel):
+    id: str
+    session_id: str
+    version: int
+    project_spec: dict
+    assumptions: list
+    missing_information: list
+    stages: list
+    status: str
+    approved_at: datetime | None
+    created_at: datetime
+    tasks: list[WorkflowTaskRead] = Field(default_factory=list)
+
+
+class AgentSessionRead(ORMModel):
+    id: str
+    project_id: str | None
+    title: str
+    status: AgentSessionStatus
+    current_stage: str
+    original_input: str
+    context_summary: str
+    created_at: datetime
+    updated_at: datetime
+    messages: list[AgentMessageRead] = Field(default_factory=list)
+    memories: list[CreativeMemoryRead] = Field(default_factory=list)
+    plans: list[WorkflowPlanRead] = Field(default_factory=list)
+
+
+class WorkflowPlanCreate(BaseModel):
+    project_spec: dict = Field(default_factory=dict)
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class ScriptIndexRead(BaseModel):
+    script_id: str
+    document_id: str
+    status: str
+    is_current: bool
+    chunk_count: int
+    embedding_status: str
+    embedding_model: str
+
+
+class RetrievalStatusRead(BaseModel):
+    enabled: bool
+    configured: bool
+    available: bool
+    model: str
+    device: str
+    model_cached: bool
+    pending_jobs: int
+    failed_jobs: int
+    error: str | None

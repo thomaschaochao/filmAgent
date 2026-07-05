@@ -18,6 +18,8 @@ from app.config import get_settings
 from app.database import Base, engine, get_db
 from app.models import (
     AgentRun,
+    AgentSession,
+    AgentSessionStatus,
     Asset,
     AssetImage,
     ChangeProposal,
@@ -26,18 +28,27 @@ from app.models import (
     ChatScope,
     ChatThread,
     ChatThreadStatus,
+    EmbeddingJob,
     Project,
     ProjectStatus,
     PromptVersion,
     ProposalStatus,
     Scene,
+    ScriptChunk,
+    ScriptDocument,
     ScriptVersion,
     Shot,
     StoryboardSnapshot,
+    WorkflowPlan,
+    WorkflowTask,
+    WorkflowTaskStatus,
 )
 from app.schemas import (
+    AgentMessageCreate,
     AgentMetricsRead,
     AgentRunDetailRead,
+    AgentSessionCreate,
+    AgentSessionRead,
     AssetCreate,
     AssetImageGenerateRequest,
     AssetImageRead,
@@ -55,14 +66,19 @@ from app.schemas import (
     PromptGenerateRequest,
     PromptRead,
     ProposalOperation,
+    RetrievalStatusRead,
     SceneRead,
     ScriptCreate,
     ScriptGenerateRequest,
+    ScriptIndexRead,
     ScriptRead,
     ShotRead,
     ShotUpdate,
     StoryboardDraft,
     StoryboardSnapshotRead,
+    WorkflowPlanCreate,
+    WorkflowPlanRead,
+    WorkflowTaskRead,
 )
 from app.services.chat import (
     ChatValidationError,
@@ -73,6 +89,8 @@ from app.services.chat import (
 )
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
+from app.services.orchestrator import continue_conversation, create_plan, index_script
+from app.services.rag import LocalRAG
 from app.services.workflow import (
     extract_assets,
     generate_asset_prompt,
@@ -1782,3 +1800,339 @@ def revert_chat_proposal(proposal_id: str, db: DbSession) -> ChangeProposal:
         raise HTTPException(status_code=409, detail=f"Cannot safely revert: {exc}") from exc
     db.refresh(proposal)
     return proposal
+
+
+def _require_agent_session(db: Session, session_id: str) -> AgentSession:
+    session = db.scalar(
+        select(AgentSession)
+        .where(AgentSession.id == session_id)
+        .options(
+            selectinload(AgentSession.messages),
+            selectinload(AgentSession.memories),
+            selectinload(AgentSession.plans).selectinload(WorkflowPlan.tasks),
+        )
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agent session not found")
+    return session
+
+
+def _require_workflow_plan(db: Session, plan_id: str) -> WorkflowPlan:
+    plan = db.scalar(
+        select(WorkflowPlan)
+        .where(WorkflowPlan.id == plan_id)
+        .options(selectinload(WorkflowPlan.tasks), selectinload(WorkflowPlan.session))
+    )
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Workflow plan not found")
+    return plan
+
+
+@app.post(
+    f"{API}/agent/sessions",
+    response_model=AgentSessionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_agent_session(payload: AgentSessionCreate, db: DbSession) -> AgentSession:
+    session = AgentSession(
+        title=payload.title,
+        original_input=payload.initial_input,
+    )
+    db.add(session)
+    db.commit()
+    if payload.initial_input.strip():
+        continue_conversation(db, session, payload.initial_input.strip(), {})
+    return _require_agent_session(db, session.id)
+
+
+@app.get(f"{API}/agent/sessions", response_model=list[AgentSessionRead])
+def list_agent_sessions(db: DbSession) -> list[AgentSession]:
+    ids = list(
+        db.scalars(select(AgentSession.id).order_by(AgentSession.updated_at.desc()).limit(30)).all()
+    )
+    return [_require_agent_session(db, session_id) for session_id in ids]
+
+
+@app.get(f"{API}/agent/sessions/{{session_id}}", response_model=AgentSessionRead)
+def get_agent_session(session_id: str, db: DbSession) -> AgentSession:
+    return _require_agent_session(db, session_id)
+
+
+@app.post(f"{API}/agent/sessions/{{session_id}}/messages", response_model=AgentSessionRead)
+def send_agent_message(
+    session_id: str, payload: AgentMessageCreate, db: DbSession
+) -> AgentSession:
+    session = _require_agent_session(db, session_id)
+    if session.status in {AgentSessionStatus.cancelled, AgentSessionStatus.completed}:
+        raise HTTPException(status_code=409, detail="This agent session is no longer active")
+    continue_conversation(db, session, payload.content, payload.facts)
+    return _require_agent_session(db, session.id)
+
+
+@app.get(
+    f"{API}/agent/sessions/{{session_id}}/memory",
+    response_model=list[dict],
+)
+def list_agent_memory(session_id: str, db: DbSession) -> list[dict]:
+    session = _require_agent_session(db, session_id)
+    return [
+        {
+            "id": item.id,
+            "category": item.category,
+            "key": item.key,
+            "value": item.value,
+            "status": item.status,
+            "source_type": item.source_type,
+        }
+        for item in session.memories
+    ]
+
+
+@app.post(
+    f"{API}/agent/sessions/{{session_id}}/plan",
+    response_model=WorkflowPlanRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_agent_plan(
+    session_id: str, payload: WorkflowPlanCreate, db: DbSession
+) -> WorkflowPlan:
+    session = _require_agent_session(db, session_id)
+    return create_plan(db, session, payload.project_spec, payload.assumptions)
+
+
+@app.post(f"{API}/agent/plans/{{plan_id}}/approve", response_model=AgentSessionRead)
+def approve_agent_plan(plan_id: str, db: DbSession) -> AgentSession:
+    plan = _require_workflow_plan(db, plan_id)
+    session = plan.session
+    if plan.missing_information:
+        raise HTTPException(status_code=409, detail="Resolve missing information before approval")
+    if session.project_id:
+        return _require_agent_session(db, session.id)
+    spec = plan.project_spec
+    project = Project(
+        name=spec["name"],
+        description=spec.get("description", ""),
+        visual_style=spec.get("visual_style", "电影感写实"),
+        world_setting=spec.get("world_setting", ""),
+        aspect_ratio=spec.get("aspect_ratio", "16:9"),
+        language=spec.get("language", "zh-CN"),
+        status=ProjectStatus.script_review,
+    )
+    db.add(project)
+    db.flush()
+    script = ScriptVersion(
+        project_id=project.id,
+        version=1,
+        title=spec.get("script_title") or project.name,
+        content=spec.get("script_content") or session.original_input,
+        source_type="user",
+    )
+    db.add(script)
+    session.project_id = project.id
+    session.status = AgentSessionStatus.awaiting_stage_approval
+    session.current_stage = "assets"
+    plan.status = "approved"
+    plan.approved_at = datetime.now(UTC)
+    first_task = next(task for task in plan.tasks if task.stage == "project_script")
+    first_task.status = WorkflowTaskStatus.completed
+    first_task.result_data = {"project_id": project.id, "script_id": script.id}
+    db.commit()
+    document, embedding_job = index_script(db, script)
+    if not LocalRAG().status()["available"]:
+        embedding_job.status = "keyword_ready"
+        document.status = "ready"
+        document.is_current = True
+        db.commit()
+    return _require_agent_session(db, session.id)
+
+
+@app.post(
+    f"{API}/agent/plans/{{plan_id}}/stages/{{stage_name}}/approve",
+    response_model=WorkflowTaskRead,
+)
+def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> WorkflowTask:
+    plan = _require_workflow_plan(db, plan_id)
+    task = next((item for item in plan.tasks if item.stage == stage_name), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Workflow stage not found")
+    if task.status == WorkflowTaskStatus.completed:
+        return task
+    if not plan.session.project_id:
+        raise HTTPException(status_code=409, detail="Approve the project plan first")
+    project = require_project(db, plan.session.project_id)
+    script = db.scalar(
+        select(ScriptVersion)
+        .where(ScriptVersion.project_id == project.id)
+        .order_by(ScriptVersion.version.desc())
+    )
+    if script is None:
+        raise HTTPException(status_code=409, detail="The project does not have a script")
+    task.status = WorkflowTaskStatus.running
+    db.commit()
+    try:
+        if stage_name == "assets":
+            approve_script(script.id, db)
+            assets = extract_project_assets(project.id, db)
+            for asset in assets:
+                create_asset_prompt(asset.id, db)
+            task.result_data = {"asset_count": len(assets)}
+            next_stage = "shots"
+        elif stage_name == "shots":
+            scenes = create_shots(script.id, db)
+            task.result_data = {"scene_count": len(scenes)}
+            next_stage = "prompts"
+        elif stage_name == "prompts":
+            scenes = list_scenes(project.id, db)
+            mode = plan.project_spec.get("prompt_mode", "initial_frame")
+            count = 0
+            for scene in scenes:
+                for shot in scene.shots:
+                    create_prompt(shot.id, db, PromptGenerateRequest(mode=mode))
+                    count += 1
+            task.result_data = {"prompt_count": count, "mode": mode}
+            next_stage = "images"
+        elif stage_name == "images":
+            task.result_data = {
+                "suggestion": "请先选择主要人物、核心场景和关键道具，再确认图片批次。"
+            }
+            next_stage = "completed"
+        else:
+            raise HTTPException(status_code=409, detail="This stage cannot be executed directly")
+        task.status = WorkflowTaskStatus.completed
+        plan.session.current_stage = next_stage
+        plan.session.status = (
+            AgentSessionStatus.completed
+            if next_stage == "completed"
+            else AgentSessionStatus.awaiting_stage_approval
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        task = db.get(WorkflowTask, task.id)
+        task.status = WorkflowTaskStatus.failed
+        task.error_message = str(exc)
+        task.retry_count += 1
+        db.commit()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.refresh(task)
+    return task
+
+
+def _run_embedding_job(job_id: str) -> None:
+    worker_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    try:
+        job = worker_session.get(EmbeddingJob, job_id)
+        if job is None:
+            return
+        document = worker_session.get(ScriptDocument, job.document_id)
+        chunks = list(
+            worker_session.scalars(
+                select(ScriptChunk)
+                .where(ScriptChunk.document_id == document.id)
+                .order_by(ScriptChunk.sequence)
+            ).all()
+        )
+        rag = LocalRAG()
+        rag_status = rag.status()
+        if not rag_status["available"]:
+            job.status = "keyword_ready"
+            document.status = "ready"
+        else:
+            job.status = "embedding"
+            worker_session.commit()
+            rag.index(
+                [
+                    {
+                        "id": chunk.id,
+                        "content": chunk.content,
+                        "chunk_id": chunk.id,
+                        "project_id": document.project_id,
+                        "script_id": document.script_version_id,
+                        "script_version": document.version,
+                        "content_type": "script_chunk",
+                        "chapter": chunk.chapter,
+                        "scene": chunk.scene,
+                        "characters": chunk.characters,
+                        "locations": chunk.locations,
+                        "content_hash": chunk.content_hash,
+                        "is_current": True,
+                    }
+                    for chunk in chunks
+                ]
+            )
+            job.status = "ready"
+            job.processed_count = len(chunks)
+            document.status = "ready"
+        worker_session.query(ScriptDocument).filter(
+            ScriptDocument.project_id == document.project_id,
+            ScriptDocument.id != document.id,
+        ).update({ScriptDocument.is_current: False})
+        document.is_current = True
+        worker_session.commit()
+    except Exception:
+        worker_session.rollback()
+        job = worker_session.get(EmbeddingJob, job_id)
+        if job:
+            job.status = "failed"
+            job.error_message = "Local embedding or vector indexing failed"
+            worker_session.commit()
+    finally:
+        worker_session.close()
+
+
+def _script_index_response(db: Session, script_id: str) -> dict:
+    document = db.scalar(
+        select(ScriptDocument).where(ScriptDocument.script_version_id == script_id)
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Script index not found")
+    job = db.scalar(
+        select(EmbeddingJob)
+        .where(EmbeddingJob.document_id == document.id)
+        .order_by(EmbeddingJob.created_at.desc())
+    )
+    count = db.scalar(
+        select(func.count(ScriptChunk.id)).where(ScriptChunk.document_id == document.id)
+    )
+    return {
+        "script_id": script_id,
+        "document_id": document.id,
+        "status": document.status,
+        "is_current": document.is_current,
+        "chunk_count": count or 0,
+        "embedding_status": job.status if job else "not_started",
+        "embedding_model": job.model if job else get_settings().embedding_model,
+    }
+
+
+@app.post(f"{API}/scripts/{{script_id}}/index", response_model=ScriptIndexRead)
+def create_script_index(
+    script_id: str, background_tasks: BackgroundTasks, db: DbSession
+) -> dict:
+    script = require_script(db, script_id)
+    _, job = index_script(db, script)
+    if job.status in {"pending", "failed"}:
+        background_tasks.add_task(_run_embedding_job, job.id)
+    return _script_index_response(db, script_id)
+
+
+@app.get(f"{API}/scripts/{{script_id}}/index", response_model=ScriptIndexRead)
+def get_script_index(script_id: str, db: DbSession) -> dict:
+    require_script(db, script_id)
+    return _script_index_response(db, script_id)
+
+
+@app.get(f"{API}/agent/retrieval/status", response_model=RetrievalStatusRead)
+def get_retrieval_status(db: DbSession) -> dict:
+    rag_status = LocalRAG().status()
+    rag_status["pending_jobs"] = db.scalar(
+        select(func.count(EmbeddingJob.id)).where(
+            EmbeddingJob.status.in_(["pending", "chunking", "embedding", "indexing"])
+        )
+    ) or 0
+    rag_status["failed_jobs"] = db.scalar(
+        select(func.count(EmbeddingJob.id)).where(EmbeddingJob.status == "failed")
+    ) or 0
+    return rag_status
