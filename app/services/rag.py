@@ -213,3 +213,49 @@ class LocalRAG:
                 )
             )
         self._client.upsert(self.settings.vector_collection, points=points, wait=True)
+
+    def search(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        script_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        from qdrant_client import models
+
+        dense, sparse = self.embed([query])
+        conditions = []
+        if project_id:
+            conditions.append(
+                models.FieldCondition(
+                    key="project_id", match=models.MatchValue(value=project_id)
+                )
+            )
+        if script_id:
+            conditions.append(
+                models.FieldCondition(
+                    key="script_id", match=models.MatchValue(value=script_id)
+                )
+            )
+        result = self._client.query_points(
+            collection_name=self.settings.vector_collection,
+            prefetch=[
+                models.Prefetch(query=dense[0], using="dense", limit=20),
+                models.Prefetch(
+                    query=models.SparseVector(
+                        indices=list(sparse[0]), values=list(sparse[0].values())
+                    ),
+                    using="sparse",
+                    limit=20,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query_filter=models.Filter(must=conditions) if conditions else None,
+            limit=limit,
+            with_payload=True,
+        )
+        return [
+            {"chunk_id": str(point.payload["chunk_id"]), "score": float(point.score)}
+            for point in result.points
+        ]

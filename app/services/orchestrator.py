@@ -4,7 +4,8 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -223,6 +224,29 @@ def index_script(db: Session, script: ScriptVersion) -> tuple[ScriptDocument, Em
         db.add(chunk)
         chunks.append(chunk)
     db.flush()
+    try:
+        db.execute(
+            text(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS script_chunks_fts "
+                "USING fts5(chunk_id UNINDEXED, content, chapter, scene)"
+            )
+        )
+        for chunk in chunks:
+            db.execute(
+                text(
+                    "INSERT INTO script_chunks_fts(chunk_id, content, chapter, scene) "
+                    "VALUES (:chunk_id, :content, :chapter, :scene)"
+                ),
+                {
+                    "chunk_id": chunk.id,
+                    "content": chunk.content,
+                    "chapter": chunk.chapter,
+                    "scene": chunk.scene,
+                },
+            )
+    except SQLAlchemyError:
+        # SQLite builds without FTS5 retain the regular-table keyword fallback.
+        pass
     for index, chunk in enumerate(chunks):
         chunk.previous_chunk_id = chunks[index - 1].id if index else None
         chunk.next_chunk_id = chunks[index + 1].id if index + 1 < len(chunks) else None

@@ -66,6 +66,8 @@ from app.schemas import (
     PromptGenerateRequest,
     PromptRead,
     ProposalOperation,
+    RetrievalHit,
+    RetrievalQuery,
     RetrievalStatusRead,
     SceneRead,
     ScriptCreate,
@@ -2113,8 +2115,13 @@ def create_script_index(
     script_id: str, background_tasks: BackgroundTasks, db: DbSession
 ) -> dict:
     script = require_script(db, script_id)
-    _, job = index_script(db, script)
-    if job.status in {"pending", "failed"}:
+    document, job = index_script(db, script)
+    if not LocalRAG().status()["available"]:
+        job.status = "keyword_ready"
+        document.status = "ready"
+        document.is_current = True
+        db.commit()
+    elif job.status in {"pending", "failed"}:
         background_tasks.add_task(_run_embedding_job, job.id)
     return _script_index_response(db, script_id)
 
@@ -2137,3 +2144,60 @@ def get_retrieval_status(db: DbSession) -> dict:
         select(func.count(EmbeddingJob.id)).where(EmbeddingJob.status == "failed")
     ) or 0
     return rag_status
+
+
+@app.post(f"{API}/agent/retrieve", response_model=list[RetrievalHit])
+def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]:
+    statement = select(ScriptChunk).join(
+        ScriptDocument, ScriptDocument.id == ScriptChunk.document_id
+    )
+    if payload.project_id:
+        statement = statement.where(ScriptDocument.project_id == payload.project_id)
+    if payload.script_id:
+        statement = statement.where(ScriptDocument.script_version_id == payload.script_id)
+    chunks = list(db.scalars(statement).all())
+    if not chunks:
+        return []
+
+    vector_scores: dict[str, float] = {}
+    rag = LocalRAG()
+    if rag.status()["available"]:
+        try:
+            vector_scores = {
+                item["chunk_id"]: item["score"]
+                for item in rag.search(
+                    payload.query,
+                    project_id=payload.project_id,
+                    script_id=payload.script_id,
+                    limit=20,
+                )
+            }
+        except Exception:
+            vector_scores = {}
+
+    terms = [
+        term.casefold()
+        for term in re.findall(r"[\u3400-\u9fff]{2,}|[A-Za-z0-9_]+", payload.query)
+    ]
+    ranked = []
+    for chunk in chunks:
+        haystack = f"{chunk.chapter} {chunk.scene} {chunk.content}".casefold()
+        lexical = sum(haystack.count(term) for term in terms)
+        vector = vector_scores.get(chunk.id, 0.0)
+        if lexical or vector:
+            ranked.append((vector + min(lexical, 10) * 0.1, lexical, chunk))
+    ranked.sort(key=lambda item: (item[0], item[1], -item[2].sequence), reverse=True)
+    return [
+        {
+            "chunk_id": chunk.id,
+            "content": chunk.content,
+            "score": round(score, 6),
+            "source": "hybrid" if chunk.id in vector_scores and lexical else (
+                "vector" if chunk.id in vector_scores else "keyword"
+            ),
+            "chapter": chunk.chapter,
+            "scene": chunk.scene,
+            "characters": chunk.characters,
+        }
+        for score, lexical, chunk in ranked[: payload.limit]
+    ]

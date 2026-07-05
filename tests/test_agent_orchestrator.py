@@ -82,3 +82,28 @@ def test_retrieval_status_does_not_expose_local_paths(client):
     body = response.json()
     assert body["model"] == "BAAI/bge-m3"
     assert "path" not in body
+
+
+def test_keyword_retrieval_is_available_without_embedding_dependencies(client):
+    project = client.post("/api/v1/projects", json={"name": "检索项目"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={
+            "title": "返航",
+            "content": (
+                "内景：驾驶舱 - 夜\n\n林深握紧操纵杆。\n\n"
+                "外景：跑道 - 夜\n\n跑道灯在暴雨中延伸。"
+            ),
+        },
+    ).json()
+    assert client.post(f"/api/v1/scripts/{script['id']}/index").status_code == 200
+
+    response = client.post(
+        "/api/v1/agent/retrieve",
+        json={"query": "驾驶舱 林深", "project_id": project["id"]},
+    )
+    assert response.status_code == 200
+    hits = response.json()
+    assert hits
+    assert "林深" in hits[0]["content"]
+    assert hits[0]["source"] in {"keyword", "hybrid"}

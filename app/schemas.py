@@ -512,3 +512,20 @@ class RetrievalStatusRead(BaseModel):
     pending_jobs: int
     failed_jobs: int
     error: str | None
+
+
+class RetrievalQuery(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    project_id: str | None = None
+    script_id: str | None = None
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class RetrievalHit(BaseModel):
+    chunk_id: str
+    content: str
+    score: float
+    source: str
+    chapter: str
+    scene: str
+    characters: list[str]
