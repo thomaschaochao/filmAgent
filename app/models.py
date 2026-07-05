@@ -70,6 +70,28 @@ class ProposalStatus(StrEnum):
     reverted = "reverted"
 
 
+class AgentSessionStatus(StrEnum):
+    collecting = "collecting"
+    clarifying = "clarifying"
+    researching = "researching"
+    plan_ready = "plan_ready"
+    awaiting_approval = "awaiting_approval"
+    executing = "executing"
+    awaiting_stage_approval = "awaiting_stage_approval"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class WorkflowTaskStatus(StrEnum):
+    pending = "pending"
+    running = "running"
+    awaiting_approval = "awaiting_approval"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -364,3 +386,213 @@ class ChangeProposal(Base):
 
     thread: Mapped[ChatThread] = relationship(back_populates="proposals")
     trigger_message: Mapped[ChatMessage | None] = relationship(back_populates="proposals")
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), default="新的影片计划")
+    status: Mapped[AgentSessionStatus] = mapped_column(
+        Enum(AgentSessionStatus), default=AgentSessionStatus.collecting, index=True
+    )
+    current_stage: Mapped[str] = mapped_column(String(64), default="discovery")
+    original_input: Mapped[str] = mapped_column(Text, default="")
+    context_summary: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    messages: Mapped[list["AgentMessage"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="AgentMessage.created_at"
+    )
+    memories: Mapped[list["CreativeMemory"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+    plans: Mapped[list["WorkflowPlan"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[ChatMessageRole] = mapped_column(Enum(ChatMessageRole), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    session: Mapped[AgentSession] = relationship(back_populates="messages")
+
+
+class CreativeMemory(Base):
+    __tablename__ = "creative_memories"
+    __table_args__ = (
+        UniqueConstraint("session_id", "category", "key", name="uq_memory_session_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    key: Mapped[str] = mapped_column(String(100))
+    value: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="inferred", index=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="conversation")
+    source_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    session: Mapped[AgentSession] = relationship(back_populates="memories")
+
+
+class WorkflowPlan(Base):
+    __tablename__ = "workflow_plans"
+    __table_args__ = (UniqueConstraint("session_id", "version", name="uq_plan_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    project_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    assumptions: Mapped[list] = mapped_column(JSON, default=list)
+    missing_information: Mapped[list] = mapped_column(JSON, default=list)
+    stages: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    session: Mapped[AgentSession] = relationship(back_populates="plans")
+    tasks: Mapped[list["WorkflowTask"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan", order_by="WorkflowTask.sequence"
+    )
+
+
+class WorkflowTask(Base):
+    __tablename__ = "workflow_tasks"
+    __table_args__ = (UniqueConstraint("plan_id", "sequence", name="uq_task_sequence"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_plans.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    stage: Mapped[str] = mapped_column(String(64), index=True)
+    operation: Mapped[str] = mapped_column(String(64))
+    status: Mapped[WorkflowTaskStatus] = mapped_column(
+        Enum(WorkflowTaskStatus), default=WorkflowTaskStatus.pending, index=True
+    )
+    input_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    result_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(100), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    plan: Mapped[WorkflowPlan] = relationship(back_populates="tasks")
+
+
+class ScriptDocument(Base):
+    __tablename__ = "script_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    script_version_id: Mapped[str] = mapped_column(
+        ForeignKey("script_versions.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ScriptChunk(Base):
+    __tablename__ = "script_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "sequence", name="uq_document_chunk_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("script_documents.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    token_count: Mapped[int] = mapped_column(Integer)
+    chapter: Mapped[str] = mapped_column(String(200), default="")
+    scene: Mapped[str] = mapped_column(String(300), default="")
+    characters: Mapped[list] = mapped_column(JSON, default=list)
+    locations: Mapped[list] = mapped_column(JSON, default=list)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    previous_chunk_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    next_chunk_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ScriptSummary(Base):
+    __tablename__ = "script_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("script_documents.id", ondelete="CASCADE"), index=True
+    )
+    level: Mapped[str] = mapped_column(String(32), index=True)
+    scope_key: Mapped[str] = mapped_column(String(300), default="")
+    content: Mapped[str] = mapped_column(Text)
+    source_chunk_ids: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmbeddingJob(Base):
+    __tablename__ = "embedding_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("script_documents.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    model: Mapped[str] = mapped_column(String(200))
+    processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ResearchSource(Base):
+    __tablename__ = "research_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    query: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(String(500))
+    url: Mapped[str] = mapped_column(String(2000))
+    summary: Mapped[str] = mapped_column(Text, default="")
+    adoption_reason: Mapped[str] = mapped_column(Text, default="")
+    fetch_method: Mapped[str] = mapped_column(String(64), default="local")
+    adopted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

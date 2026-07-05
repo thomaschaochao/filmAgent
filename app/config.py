@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     seedream_model: str = "doubao-seedream-5-0-260128"
     image_timeout_seconds: float = 300.0
+    embedding_enabled: bool = True
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_device: str = "auto"
+    embedding_max_length: int = Field(default=2048, ge=256, le=8192)
+    embedding_cpu_batch_size: int = Field(default=4, ge=1, le=128)
+    embedding_gpu_batch_size: int = Field(default=16, ge=1, le=256)
+    embedding_model_path: Path = Path("storage/models/bge-m3")
+    qdrant_path: Path = Path("storage/vector/qdrant")
+    vector_collection: str = "filmagent_knowledge_v1"
 
     @staticmethod
     def _secret_value(secret: SecretStr | None) -> str | None:
