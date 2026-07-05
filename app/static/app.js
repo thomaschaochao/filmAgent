@@ -8,6 +8,7 @@ const state = {
   metrics: null, returnStep: "project",
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
   chatThreads: [], chatThread: null, chatTarget: null,
+  agentSessions: [], agentSession: null, retrievalStatus: null, showMasterAgent: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -116,6 +117,11 @@ function renderWorkflow() {
 
 function render() {
   renderSidebar(); renderHeader(); renderWorkflow();
+  if (!state.project || state.showMasterAgent) {
+    renderMasterAgent();
+    $("#chat-launcher").hidden = true;
+    return;
+  }
   const views = { project: renderProject, script: renderScript, assets: renderAssets, shots: renderShots, prompts: renderPrompts, metrics: renderMetrics };
   views[state.step]();
   const chatAvailable = state.project && ["script", "assets", "shots", "prompts"].includes(state.step);
@@ -171,10 +177,35 @@ function renderProject() {
   }
   const p = state.project;
   $("#content").innerHTML = `
-    <div class="section-head"><div><span class="eyebrow">PRODUCTION OVERVIEW</span><h2>项目设定</h2><p>这是后续剧本、分镜和提示词共用的创作基准。</p></div><div class="actions"><button class="button" data-action="edit-project">编辑项目设定</button><button class="button primary" data-step-next="script">进入剧本创作 →</button></div></div>
+    <div class="section-head"><div><span class="eyebrow">PRODUCTION OVERVIEW</span><h2>项目设定</h2><p>这是后续剧本、分镜和提示词共用的创作基准。</p></div><div class="actions"><button class="button" data-action="open-master-agent">总控智能体</button><button class="button" data-action="edit-project">编辑项目设定</button><button class="button primary" data-step-next="script">进入剧本创作 →</button></div></div>
     <div class="overview-grid">
       <article class="panel project-card"><span class="tag">${esc(statusLabels[p.status] || p.status)}</span><h3>${esc(p.name)}</h3><p>${esc(p.description || "尚未填写故事简介。你仍然可以在剧本阶段直接开始创作。")}</p></article>
       <aside class="panel details-card"><span class="eyebrow">CREATIVE PROFILE</span><div class="details-list"><div class="detail-row"><span>世界与地域设定</span><strong>${esc(p.world_setting || "尚未设定")}</strong></div><div class="detail-row"><span>视觉风格</span><strong>${esc(p.visual_style)}</strong></div><div class="detail-row"><span>输出画幅</span><strong>${esc(p.aspect_ratio)}</strong></div><div class="detail-row"><span>创作语言</span><strong>${esc(p.language)}</strong></div><div class="detail-row"><span>当前阶段</span><strong>${esc(statusLabels[p.status] || p.status)}</strong></div></div></aside>
+    </div>`;
+}
+
+function renderMasterAgent() {
+  const session = state.agentSession;
+  const status = state.retrievalStatus;
+  const plan = session?.plans?.at(-1);
+  const activeTask = plan?.tasks?.find(task => task.status === "awaiting_approval" || task.status === "failed");
+  const memories = session?.memories || [];
+  const missing = session?.messages?.at(-1)?.metadata_json?.missing_information || [];
+  const messages = session?.messages || [];
+  $("#content").innerHTML = `
+    <div class="agent-home">
+      <div class="section-head"><div><span class="eyebrow">MASTER PRODUCTION AGENT</span><h2>从一句话开始完成整部影片的前期工作</h2><p>先澄清创作设定、生成计划，再由你逐阶段确认执行。</p></div><div class="actions">${state.project ? `<button class="button" data-action="close-master-agent">返回项目</button>` : ""}<button class="button" data-action="new-agent-session">新会话</button></div></div>
+      <div class="agent-home-grid">
+        <section class="panel master-agent-panel">
+          <header><div><span class="eyebrow">${session ? esc(session.status) : "READY"}</span><h3>${esc(session?.title || "总控智能体")}</h3></div><span class="rag-badge ${status?.available ? "ready" : "fallback"}">${status?.available ? "BGE-M3 · QDRANT" : "关键词检索模式"}</span></header>
+          <div class="master-agent-messages">${messages.length ? messages.map(message => `<div class="master-message ${message.role}"><small>${message.role === "user" ? "你" : "智能体"}</small>${esc(message.content)}</div>`).join("") : `<div class="agent-welcome"><strong>描述你的故事，或粘贴完整剧本</strong><p>我会识别视觉风格、时间地点、画幅和提示词模式；不确定的信息会先询问，不会直接创建项目。</p></div>`}</div>
+          ${session ? `<form id="master-agent-form" class="master-agent-form"><textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本……"></textarea><details class="agent-facts"><summary>快速补充项目设定（可选）</summary><div><input name="name" placeholder="项目名称"><input name="visual_style" placeholder="视觉风格"><input name="world_setting" placeholder="时代与地点"><select name="aspect_ratio"><option value="">画幅</option><option>16:9</option><option>2.39:1</option><option>4:3</option><option>9:16</option></select><select name="prompt_mode"><option value="">提示词模式</option><option value="initial_frame">首帧</option><option value="storyboard">故事板</option></select></div></details><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
+        </section>
+        <aside class="agent-context-column">
+          <section class="panel agent-context-card"><span class="eyebrow">CREATIVE MEMORY</span><h3>已确认创作信息</h3>${memories.length ? memories.map(item => `<div class="memory-row"><span>${esc(item.key)}</span><strong>${esc(item.value)}</strong></div>`).join("") : `<p>对话后会在这里形成可追溯的项目记忆。</p>`}${missing.length ? `<div class="missing-box"><strong>仍需确认</strong><p>${missing.map(esc).join("、")}</p></div>` : ""}</section>
+          <section class="panel agent-context-card"><span class="eyebrow">WORKFLOW PLAN</span><h3>制作计划</h3>${plan ? `<div class="agent-stage-list">${plan.tasks.map(task => `<div class="agent-stage ${task.status}"><span>${String(task.sequence).padStart(2,"0")}</span><div><strong>${esc(task.stage)}</strong><small>${esc(task.status)}</small></div></div>`).join("")}</div>${!session.project_id ? `<button class="button primary full" data-agent-approve-plan="${plan.id}">确认计划并创建项目</button>` : activeTask ? `<button class="button primary full" data-agent-stage="${activeTask.stage}" data-agent-plan="${plan.id}">${activeTask.status === "failed" ? "重试" : "确认执行"} · ${esc(activeTask.stage)}</button>` : ""}` : session && session.status === "plan_ready" ? `<button class="button primary full" data-action="generate-agent-plan">生成完整制作计划</button>` : `<p>关键信息齐全后才会生成计划。</p>`}</section>
+        </aside>
+      </div>
     </div>`;
 }
 
@@ -227,10 +258,48 @@ function renderPrompts() {
 }
 
 async function loadProjects(selectId = null) {
-  state.projects = await request("/projects");
+  [state.projects, state.agentSessions, state.retrievalStatus] = await Promise.all([
+    request("/projects"), request("/agent/sessions"), request("/agent/retrieval/status"),
+  ]);
+  state.agentSession = state.agentSessions[0] || null;
   if (selectId) await selectProject(selectId);
   else if (state.projects.length) await selectProject(state.projects[0].id);
   else render();
+}
+
+async function createAgentSession() {
+  const session = await request("/agent/sessions", {
+    method: "POST", body: JSON.stringify({ title: "新的影片计划" }),
+  });
+  state.agentSessions.unshift(session); state.agentSession = session; state.showMasterAgent = true; render();
+}
+
+async function refreshAgentSession() {
+  if (!state.agentSession) return;
+  state.agentSession = await request(`/agent/sessions/${state.agentSession.id}`);
+  state.agentSessions = state.agentSessions.map(item => item.id === state.agentSession.id ? state.agentSession : item);
+}
+
+async function generateAgentPlan() {
+  const plan = await request(`/agent/sessions/${state.agentSession.id}/plan`, { method: "POST", body: "{}" });
+  await refreshAgentSession(); renderMasterAgent(); toast(`计划 V${plan.version} 已生成`);
+}
+
+async function approveAgentPlan(planId) {
+  loading(true, "正在创建项目与剧本", "完成后将建立本地语义索引");
+  state.agentSession = await request(`/agent/plans/${planId}/approve`, { method: "POST" });
+  state.projects = await request("/projects");
+  state.project = state.projects.find(item => item.id === state.agentSession.project_id) || null;
+  if (state.project) await selectProject(state.project.id);
+  state.showMasterAgent = true; loading(false); render(); toast("项目与剧本已创建");
+}
+
+async function approveAgentStage(planId, stage) {
+  loading(true, `正在执行 ${stage}`, "该阶段可能调用外部模型，请稍候");
+  await request(`/agent/plans/${planId}/stages/${stage}/approve`, { method: "POST" });
+  await refreshAgentSession();
+  if (state.agentSession.project_id) await selectProject(state.agentSession.project_id);
+  state.showMasterAgent = true; loading(false); render(); toast(`${stage} 阶段已完成`);
 }
 
 async function selectProject(id) {
@@ -532,6 +601,8 @@ document.addEventListener("click", event => {
 }, true);
 
 document.addEventListener("click", async event => {
+  const approveMasterPlan = event.target.closest("[data-agent-approve-plan]");
+  const approveMasterStage = event.target.closest("[data-agent-stage]");
   const chatTargetButton = event.target.closest("[data-chat-target]");
   const projectButton = event.target.closest("[data-project-id]");
   const stepButton = event.target.closest("[data-step], [data-step-next]");
@@ -555,7 +626,9 @@ document.addEventListener("click", async event => {
   const shotCard = chatTargetButton ? null : event.target.closest("[data-shot-id]");
   const agentRun = event.target.closest("[data-agent-run]");
   try {
-    if (agentRun) await openAgentRunDetail(agentRun.dataset.agentRun);
+    if (approveMasterPlan) await approveAgentPlan(approveMasterPlan.dataset.agentApprovePlan);
+    else if (approveMasterStage) await approveAgentStage(approveMasterStage.dataset.agentPlan, approveMasterStage.dataset.agentStage);
+    else if (agentRun) await openAgentRunDetail(agentRun.dataset.agentRun);
     else if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
     else if (stepButton && !stepButton.disabled) setStep(stepButton.dataset.step || stepButton.dataset.stepNext);
     else if (modeButton) { state.scriptMode = modeButton.dataset.scriptMode; renderScript(); }
@@ -593,6 +666,10 @@ document.addEventListener("click", async event => {
     else if (deleteShotButton) await deleteShot(deleteShotButton.dataset.deleteShot);
     else if (shotCard) openShotDialog(state.scenes.flatMap(s => s.shots).find(s => s.id === shotCard.dataset.shotId));
     else if (event.target.closest("#new-project-button") || actionButton?.dataset.action === "new-project") openProjectDialog();
+    else if (actionButton?.dataset.action === "new-agent-session") await createAgentSession();
+    else if (actionButton?.dataset.action === "open-master-agent") { state.showMasterAgent = true; render(); }
+    else if (actionButton?.dataset.action === "close-master-agent") { state.showMasterAgent = false; render(); }
+    else if (actionButton?.dataset.action === "generate-agent-plan") await generateAgentPlan();
     else if (actionButton?.dataset.action === "edit-project") openProjectDialog(state.project);
     else if (actionButton?.dataset.action === "toggle-asset-selection") {
       state.assetSelectionMode = !state.assetSelectionMode;
@@ -631,6 +708,34 @@ document.addEventListener("click", async event => {
       if (frame) { await navigator.clipboard.writeText(frame.description); toast(`第 ${frame.index} 帧描述已复制`); }
     }
   } catch (error) { loading(false); toast(error.message, "error"); }
+});
+
+document.addEventListener("submit", async event => {
+  if (event.target.id !== "master-agent-form") return;
+  event.preventDefault();
+  const input = $("#master-agent-input");
+  const content = input.value.trim();
+  if (!content || !state.agentSession) return;
+  input.disabled = true;
+  try {
+    const facts = Object.fromEntries([...new FormData(event.target)].filter(([, value]) => value));
+    state.agentSession = await request(`/agent/sessions/${state.agentSession.id}/messages`, {
+      method: "POST", body: JSON.stringify({ content, facts }),
+    });
+    input.value = "";
+    renderMasterAgent();
+  } catch (error) { toast(error.message, "error"); }
+});
+
+document.addEventListener("change", async event => {
+  if (event.target.id !== "master-agent-file") return;
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (!/\.(txt|md)$/i.test(file.name) || file.size > 5 * 1024 * 1024) {
+    toast("请选择不超过 5MB 的 .txt 或 .md 文件", "error"); return;
+  }
+  $("#master-agent-input").value = await file.text();
+  toast(`已读取 ${file.name}，发送前可以继续编辑`);
 });
 
 $("#asset-image-generate-form").addEventListener("submit", async event => {

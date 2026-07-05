@@ -1811,6 +1811,7 @@ def _require_agent_session(db: Session, session_id: str) -> AgentSession:
             selectinload(AgentSession.memories),
             selectinload(AgentSession.plans).selectinload(WorkflowPlan.tasks),
         )
+        .execution_options(populate_existing=True)
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Agent session not found")
