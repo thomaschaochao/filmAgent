@@ -30,6 +30,8 @@ def test_frontend_entrypoint(client):
     assert "data-prompt-default-mode" in app_response.text
     assert "data-shot-prompt-mode" in app_response.text
     assert "data-copy-frame" in app_response.text
+    assert "data-copy-director-overhead" in app_response.text
+    assert "director_overhead" in app_response.text
     assert "openChat" in app_response.text
     assert "data-chat-apply" in app_response.text
     assert "chatTargetButton ? null" in app_response.text
