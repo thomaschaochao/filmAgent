@@ -78,6 +78,7 @@ from app.schemas import (
     RetrievalQuery,
     RetrievalRebuildRead,
     RetrievalRebuildRequest,
+    RetrievalSelfTestRead,
     RetrievalStatusRead,
     SceneRead,
     ScriptCreate,
@@ -2289,6 +2290,11 @@ def get_retrieval_status(db: DbSession) -> dict:
         select(func.count(EmbeddingJob.id)).where(EmbeddingJob.status == "failed")
     ) or 0
     return rag_status
+
+
+@app.post(f"{API}/agent/retrieval/self-test", response_model=RetrievalSelfTestRead)
+def run_retrieval_self_test() -> dict:
+    return LocalRAG().self_test()
 
 
 @app.post(f"{API}/agent/retrieve", response_model=list[RetrievalHit])

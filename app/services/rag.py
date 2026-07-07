@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -321,6 +322,71 @@ class LocalRAG:
 
     def delete_script_vectors(self, script_id: str) -> None:
         self._delete_by_filter(script_id=script_id)
+
+    def self_test(self) -> dict[str, Any]:
+        status = self.status()
+        result: dict[str, Any] = {
+            "available": status["available"],
+            "vector_backend": "qdrant_local",
+            "model": status["model"],
+            "device": status["device"],
+            "collection": status["collection"],
+            "checks": {
+                "dependencies": status["configured"],
+                "qdrant_local": status["qdrant_local"],
+                "model_cached": status["model_cached"],
+                "index": False,
+                "search": False,
+                "delete": False,
+            },
+            "message": "Local RAG is unavailable; keyword retrieval fallback is active.",
+        }
+        if not status["available"]:
+            return result
+        point_id = f"self-test-{uuid.uuid4()}"
+        try:
+            self.index_chunks(
+                [
+                    {
+                        "id": point_id,
+                        "content": "FilmAgent local rag self test runway beacon.",
+                        "chunk_id": point_id,
+                        "project_id": "__self_test__",
+                        "script_id": "__self_test__",
+                        "script_version": 0,
+                        "content_type": "self_test",
+                        "chapter": "diagnostics",
+                        "scene": "qdrant_local",
+                        "characters": [],
+                        "locations": [],
+                        "content_hash": hashlib.sha256(point_id.encode("utf-8")).hexdigest(),
+                        "is_current": False,
+                    }
+                ]
+            )
+            result["checks"]["index"] = True
+            hits = self.hybrid_search(
+                "runway beacon",
+                project_id="__self_test__",
+                script_id="__self_test__",
+                content_type="self_test",
+                limit=1,
+            )
+            result["checks"]["search"] = any(hit["chunk_id"] == point_id for hit in hits)
+            self.delete_project_vectors("__self_test__")
+            result["checks"]["delete"] = True
+            result["available"] = all(result["checks"].values())
+            result["message"] = (
+                "Local RAG self-test passed."
+                if result["available"]
+                else "Local RAG self-test completed with failed checks."
+            )
+        except Exception:
+            result["available"] = False
+            result["message"] = (
+                "Local RAG self-test failed; see server logs for operational details."
+            )
+        return result
 
     def _delete_by_filter(
         self, *, project_id: str | None = None, script_id: str | None = None

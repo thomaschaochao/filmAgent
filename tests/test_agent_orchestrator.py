@@ -89,6 +89,43 @@ def test_retrieval_status_does_not_expose_local_paths(client):
     assert "path" not in body
 
 
+def test_retrieval_self_test_reports_safe_fallback(client):
+    response = client.post("/api/v1/agent/retrieval/self-test")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["vector_backend"] == "qdrant_local"
+    assert "checks" in body
+    assert "path" not in body
+    assert "traceback" not in str(body).lower()
+
+
+def test_retrieval_self_test_can_report_success(monkeypatch, client):
+    def fake_self_test(self):
+        return {
+            "available": True,
+            "vector_backend": "qdrant_local",
+            "model": "BAAI/bge-m3",
+            "device": "cpu",
+            "collection": "filmagent_knowledge_v1",
+            "checks": {
+                "dependencies": True,
+                "qdrant_local": True,
+                "model_cached": True,
+                "index": True,
+                "search": True,
+                "delete": True,
+            },
+            "message": "Local RAG self-test passed.",
+        }
+
+    monkeypatch.setattr(main.LocalRAG, "self_test", fake_self_test)
+    response = client.post("/api/v1/agent/retrieval/self-test")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert all(body["checks"].values())
+
+
 def test_keyword_retrieval_is_available_without_embedding_dependencies(client):
     project = client.post("/api/v1/projects", json={"name": "检索项目"}).json()
     script = client.post(

@@ -514,6 +514,16 @@ class RetrievalRebuildRead(BaseModel):
     fallback_count: int
 
 
+class RetrievalSelfTestRead(BaseModel):
+    available: bool
+    vector_backend: str
+    model: str
+    device: str
+    collection: str
+    checks: dict[str, bool]
+    message: str
+
+
 class RetrievalStatusRead(BaseModel):
     enabled: bool
     configured: bool
