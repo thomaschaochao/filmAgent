@@ -458,6 +458,20 @@ class WorkflowTaskRead(ORMModel):
     retry_count: int
 
 
+class WorkflowTaskCheckpointRead(BaseModel):
+    plan_id: str
+    task_id: str
+    agent_key: str
+    stage: str
+    status: str
+    last_safe_step: str
+    input_snapshot: dict
+    output_snapshot: dict
+    tool_call_history: list
+    error: dict | None
+    updated_at: str
+
+
 class WorkflowPlanRead(ORMModel):
     id: str
     session_id: str

@@ -93,6 +93,7 @@ from app.schemas import (
     WebSearchRequest,
     WorkflowPlanCreate,
     WorkflowPlanRead,
+    WorkflowTaskCheckpointRead,
     WorkflowTaskRead,
 )
 from app.services.chat import (
@@ -101,6 +102,13 @@ from app.services.chat import (
     validate_base_version,
     validate_operation_scope,
     validate_shot_merge_operations,
+)
+from app.services.checkpoint import (
+    build_checkpoint,
+    mark_completed,
+    mark_failed,
+    mark_running,
+    write_checkpoint,
 )
 from app.services.crew import crew_status
 from app.services.deepseek import DeepSeekClient, DeepSeekError
@@ -1880,6 +1888,13 @@ def _require_workflow_plan(db: Session, plan_id: str) -> WorkflowPlan:
     return plan
 
 
+def _require_workflow_task(db: Session, task_id: str) -> WorkflowTask:
+    task = db.get(WorkflowTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Workflow task not found")
+    return task
+
+
 @app.post(
     f"{API}/agent/sessions",
     response_model=AgentSessionRead,
@@ -2028,7 +2043,14 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
     )
     if script is None:
         raise HTTPException(status_code=409, detail="The project does not have a script")
-    task.status = WorkflowTaskStatus.running
+    mark_running(
+        task,
+        input_snapshot={
+            "project_id": project.id,
+            "script_id": script.id,
+            "stage": stage_name,
+        },
+    )
     db.commit()
     try:
         if stage_name == "assets":
@@ -2059,7 +2081,7 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
             next_stage = "completed"
         else:
             raise HTTPException(status_code=409, detail="This stage cannot be executed directly")
-        task.status = WorkflowTaskStatus.completed
+        mark_completed(task, output_snapshot=task.result_data)
         plan.session.current_stage = next_stage
         plan.session.status = (
             AgentSessionStatus.completed
@@ -2070,13 +2092,66 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
     except Exception as exc:
         db.rollback()
         task = db.get(WorkflowTask, task.id)
-        task.status = WorkflowTaskStatus.failed
-        task.error_message = str(exc)
-        task.retry_count += 1
+        mark_failed(task, exc, last_safe_step="stage_started")
         db.commit()
         if isinstance(exc, HTTPException):
             raise
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.refresh(task)
+    return task
+
+
+@app.get(
+    f"{API}/agent/tasks/{{task_id}}/checkpoint",
+    response_model=WorkflowTaskCheckpointRead,
+)
+def get_agent_task_checkpoint(task_id: str, db: DbSession) -> dict:
+    task = _require_workflow_task(db, task_id)
+    checkpoint = (task.result_data or {}).get("checkpoint")
+    return checkpoint or build_checkpoint(
+        task,
+        status=task.status.value if hasattr(task.status, "value") else str(task.status),
+        last_safe_step="not_started",
+        input_snapshot=task.input_data,
+        output_snapshot=task.result_data,
+    )
+
+
+@app.post(f"{API}/agent/tasks/{{task_id}}/cancel", response_model=WorkflowTaskRead)
+def cancel_agent_task(task_id: str, db: DbSession) -> WorkflowTask:
+    task = _require_workflow_task(db, task_id)
+    if task.status == WorkflowTaskStatus.completed:
+        raise HTTPException(status_code=409, detail="Completed tasks cannot be cancelled")
+    task.status = WorkflowTaskStatus.cancelled
+    task.error_message = "User interrupted the workflow task."
+    write_checkpoint(
+        task,
+        status="failed",
+        last_safe_step="user_interrupted",
+        error={
+            "type": "user_interrupted",
+            "message": "User interrupted the workflow task.",
+            "retryable": False,
+        },
+    )
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@app.post(f"{API}/agent/tasks/{{task_id}}/resume", response_model=WorkflowTaskRead)
+def resume_agent_task(task_id: str, db: DbSession) -> WorkflowTask:
+    task = _require_workflow_task(db, task_id)
+    recovery = (task.result_data or {}).get("recovery", {})
+    if task.status == WorkflowTaskStatus.completed:
+        return task
+    if task.status == WorkflowTaskStatus.cancelled:
+        raise HTTPException(status_code=409, detail="Cancelled tasks cannot be resumed")
+    if recovery and not recovery.get("retryable", True):
+        raise HTTPException(status_code=409, detail="Task is not retryable")
+    task.status = WorkflowTaskStatus.awaiting_approval
+    write_checkpoint(task, status="waiting_user", last_safe_step="resume_requested")
+    db.commit()
     db.refresh(task)
     return task
 

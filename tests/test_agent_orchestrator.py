@@ -126,6 +126,97 @@ def test_workflow_plan_records_crew_runtime_metadata(client):
     assert runtime["task_agents"]["assets"] == "asset"
 
 
+def _approved_agent_plan(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "checkpoint", "initial_input": "A pilot prepares for landing."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Checkpoint Plan",
+                "visual_style": "realistic",
+                "world_setting": "modern airport",
+                "aspect_ratio": "16:9",
+                "prompt_mode": "initial_frame",
+            },
+        },
+    )
+    plan = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={}).json()
+    approved = client.post(f"/api/v1/agent/plans/{plan['id']}/approve").json()
+    plan = approved["plans"][-1]
+    return approved, plan
+
+
+def test_workflow_task_checkpoint_is_available_before_execution(client):
+    _session, plan = _approved_agent_plan(client)
+    task = next(item for item in plan["tasks"] if item["stage"] == "assets")
+
+    response = client.get(f"/api/v1/agent/tasks/{task['id']}/checkpoint")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_id"] == task["id"]
+    assert body["status"] == "awaiting_approval"
+    assert body["last_safe_step"] == "not_started"
+
+
+def test_workflow_task_timeout_failure_can_resume(monkeypatch, client):
+    _session, plan = _approved_agent_plan(client)
+    task = next(item for item in plan["tasks"] if item["stage"] == "assets")
+
+    def fail_assets(project_id, db):
+        raise TimeoutError("provider timeout while generating assets")
+
+    monkeypatch.setattr(main, "extract_project_assets", fail_assets)
+    failed = client.post(f"/api/v1/agent/plans/{plan['id']}/stages/assets/approve")
+    assert failed.status_code == 502
+
+    checkpoint = client.get(f"/api/v1/agent/tasks/{task['id']}/checkpoint").json()
+    assert checkpoint["status"] == "resumable"
+    assert checkpoint["error"]["type"] == "provider_timeout"
+    assert checkpoint["error"]["retryable"] is True
+
+    resumed = client.post(f"/api/v1/agent/tasks/{task['id']}/resume")
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "awaiting_approval"
+
+
+def test_workflow_task_quota_failure_is_not_retryable(monkeypatch, client):
+    _session, plan = _approved_agent_plan(client)
+    task = next(item for item in plan["tasks"] if item["stage"] == "assets")
+
+    def fail_assets(project_id, db):
+        raise RuntimeError("quota exceeded: insufficient balance")
+
+    monkeypatch.setattr(main, "extract_project_assets", fail_assets)
+    failed = client.post(f"/api/v1/agent/plans/{plan['id']}/stages/assets/approve")
+    assert failed.status_code == 502
+
+    checkpoint = client.get(f"/api/v1/agent/tasks/{task['id']}/checkpoint").json()
+    assert checkpoint["status"] == "failed"
+    assert checkpoint["error"]["type"] == "quota_exceeded"
+    assert checkpoint["error"]["retryable"] is False
+    assert "FILMAGENT_" not in str(checkpoint)
+
+    resumed = client.post(f"/api/v1/agent/tasks/{task['id']}/resume")
+    assert resumed.status_code == 409
+
+
+def test_workflow_task_can_be_cancelled(client):
+    _session, plan = _approved_agent_plan(client)
+    task = next(item for item in plan["tasks"] if item["stage"] == "assets")
+
+    cancelled = client.post(f"/api/v1/agent/tasks/{task['id']}/cancel")
+
+    assert cancelled.status_code == 200
+    body = cancelled.json()
+    assert body["status"] == "cancelled"
+    assert body["result_data"]["recovery"]["error_type"] == "user_interrupted"
+
+
 def test_retrieval_status_does_not_expose_local_paths(client):
     response = client.get("/api/v1/agent/retrieval/status")
     assert response.status_code == 200

@@ -204,7 +204,7 @@ function renderMasterAgent() {
     ["Tasks", `${crew.tasks?.length || 0}`],
   ] : [];
   const plan = session?.plans?.at(-1);
-  const activeTask = plan?.tasks?.find(task => task.status === "awaiting_approval" || task.status === "failed");
+  const activeTask = plan?.tasks?.find(task => ["awaiting_approval", "failed", "running", "cancelled"].includes(task.status));
   const memories = session?.memories || [];
   const missing = session?.messages?.at(-1)?.metadata_json?.missing_information || [];
   const messages = session?.messages || [];
@@ -235,6 +235,20 @@ function renderMasterAgent() {
     agentContextColumn.insertAdjacentHTML("beforeend", `
       <section class="panel agent-context-card"><span class="eyebrow">AGENT RUNTIME</span><h3>CrewAI Status</h3>
         ${crewRows.map(([key, value]) => `<div class="memory-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}
+      </section>`);
+  }
+  if (agentContextColumn && activeTask) {
+    const checkpoint = activeTask.result_data?.checkpoint || {};
+    const recovery = activeTask.result_data?.recovery || {};
+    const resumeDisabled = activeTask.status === "completed" || activeTask.status === "cancelled" || recovery.retryable === false;
+    const cancelDisabled = activeTask.status === "completed" || activeTask.status === "cancelled";
+    agentContextColumn.insertAdjacentHTML("beforeend", `
+      <section class="panel agent-context-card"><span class="eyebrow">CHECKPOINT</span><h3>Resume State</h3>
+        <div class="memory-row"><span>Agent</span><strong>${esc(checkpoint.agent_key || "-")}</strong></div>
+        <div class="memory-row"><span>Status</span><strong>${esc(checkpoint.status || activeTask.status)}</strong></div>
+        <div class="memory-row"><span>Last safe step</span><strong>${esc(checkpoint.last_safe_step || "not_started")}</strong></div>
+        ${recovery.error_type ? `<div class="missing-box"><strong>${esc(recovery.error_type)}</strong><p>${esc(activeTask.error_message || "Workflow task interrupted.")}</p></div>` : ""}
+        <div class="actions"><button class="button" data-agent-resume-task="${activeTask.id}" ${resumeDisabled ? "disabled" : ""}>继续执行</button><button class="button danger" data-agent-cancel-task="${activeTask.id}" ${cancelDisabled ? "disabled" : ""}>取消任务</button></div>
       </section>`);
   }
 }
@@ -330,6 +344,23 @@ async function approveAgentStage(planId, stage) {
   await refreshAgentSession();
   if (state.agentSession.project_id) await selectProject(state.agentSession.project_id);
   state.showMasterAgent = true; loading(false); render(); toast(`${stage} 阶段已完成`);
+}
+
+async function resumeAgentTask(taskId) {
+  await request(`/agent/tasks/${taskId}/resume`, { method: "POST" });
+  await refreshAgentSession();
+  state.showMasterAgent = true;
+  render();
+  toast("任务已恢复到等待确认状态");
+}
+
+async function cancelAgentTask(taskId) {
+  if (!window.confirm("确定取消这个工作流任务吗？")) return;
+  await request(`/agent/tasks/${taskId}/cancel`, { method: "POST" });
+  await refreshAgentSession();
+  state.showMasterAgent = true;
+  render();
+  toast("任务已取消");
 }
 
 async function selectProject(id) {
@@ -700,6 +731,8 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "open-master-agent") { state.showMasterAgent = true; render(); }
     else if (actionButton?.dataset.action === "close-master-agent") { state.showMasterAgent = false; render(); }
     else if (actionButton?.dataset.action === "generate-agent-plan") await generateAgentPlan();
+    else if (event.target.closest("[data-agent-resume-task]")) await resumeAgentTask(event.target.closest("[data-agent-resume-task]").dataset.agentResumeTask);
+    else if (event.target.closest("[data-agent-cancel-task]")) await cancelAgentTask(event.target.closest("[data-agent-cancel-task]").dataset.agentCancelTask);
     else if (actionButton?.dataset.action === "edit-project") openProjectDialog(state.project);
     else if (actionButton?.dataset.action === "toggle-asset-selection") {
       state.assetSelectionMode = !state.assetSelectionMode;
