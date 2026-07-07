@@ -3,6 +3,7 @@ import pytest
 from app.models import Asset, Project, Shot
 from app.schemas import AssetExtractionDraft, SceneDraft, ShotDraft, StoryboardDraft
 from app.services.deepseek import DeepSeekError
+from app.services.prompt_strategy import classify_shot_prompt_strategy
 from app.services.workflow import (
     add_local_script_references,
     extract_assets,
@@ -239,6 +240,42 @@ def test_storyboard_prompt_rejects_missing_or_misordered_frames():
 )
 def test_storyboard_frame_count_adapts_to_shot_duration(duration, expected):
     assert storyboard_frame_count_for_duration(duration) == expected
+
+
+def test_prompt_strategy_recommends_storyboard_and_director_overhead_for_complex_shot():
+    shot = Shot(
+        subject="Pilot and copilot",
+        action="Pilot turns and reaches across the cockpit during landing",
+        environment="narrow aircraft cockpit",
+        camera_motion="tracking handheld pan",
+        duration_seconds=8.0,
+    )
+
+    strategy = classify_shot_prompt_strategy(shot)
+
+    assert strategy.complexity == "complex"
+    assert strategy.recommended_mode == "storyboard"
+    assert strategy.recommended_frame_count == 9
+    assert strategy.needs_director_overhead is True
+    assert "prepare_director_overhead_blocking" in strategy.continuity_constraints
+
+
+def test_prompt_strategy_keeps_simple_dialogue_on_initial_frame():
+    shot = Shot(
+        subject="A and B",
+        action="sit facing each other",
+        environment="quiet room",
+        camera_motion="static",
+        dialogue="A: We wait.\nB: We wait.",
+        duration_seconds=2.5,
+    )
+
+    strategy = classify_shot_prompt_strategy(shot)
+
+    assert strategy.complexity == "simple"
+    assert strategy.recommended_mode == "initial_frame"
+    assert strategy.recommended_frame_count is None
+    assert strategy.needs_director_overhead is False
 
 
 def test_matching_asset_is_added_as_at_reference():

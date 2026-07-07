@@ -475,7 +475,12 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     )
     prompt_response = client.post(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate")
     assert prompt_response.status_code == 200
-    assert prompt_response.json()["prompt_metadata"]["mode"] == "initial_frame"
+    prompt_metadata = prompt_response.json()["prompt_metadata"]
+    assert prompt_metadata["mode"] == "initial_frame"
+    assert prompt_metadata["strategy"]["recommended_mode"] in {"initial_frame", "storyboard"}
+    assert "keep_spatial_boundaries_respected" in prompt_metadata["strategy"][
+        "continuity_constraints"
+    ]
 
     frames = [
         StoryboardFrameDraft(
@@ -547,6 +552,7 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     assert automatic_metadata["frame_count"] == 9
     assert automatic_metadata["frame_count_source"] == "duration_auto"
     assert automatic_metadata["shot_duration_seconds"] == 7.5
+    assert automatic_metadata["strategy"]["recommended_frame_count"] == 9
 
     delete_response = client.delete(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}")
     assert delete_response.status_code == 204

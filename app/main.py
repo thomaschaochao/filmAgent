@@ -114,6 +114,7 @@ from app.services.crew import crew_status
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
+from app.services.prompt_strategy import classify_shot_prompt_strategy
 from app.services.rag import LocalRAG
 from app.services.web_tools import WebToolError, fetch_page, search_web
 from app.services.workflow import (
@@ -1212,6 +1213,7 @@ def create_prompt(
     shot = require_shot(db, shot_id)
     project = shot.scene.project
     request = payload or PromptGenerateRequest()
+    prompt_strategy = classify_shot_prompt_strategy(shot)
     resolved_frame_count = (
         request.frame_count
         if request.frame_count is not None
@@ -1265,6 +1267,12 @@ def create_prompt(
                 {4: "2x2", 6: "2x3", 9: "3x3"}[resolved_frame_count]
                 if request.mode == "storyboard"
                 else None
+            ),
+            "strategy": prompt_strategy.model_dump(),
+            "mode_source": (
+                "user_selected"
+                if request.mode != prompt_strategy.recommended_mode
+                else "agent_recommended"
             ),
             "frames": [frame.model_dump() for frame in draft.frames],
         },
