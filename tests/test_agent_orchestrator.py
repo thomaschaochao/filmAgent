@@ -274,3 +274,72 @@ def test_retrieval_rebuild_can_be_scoped_to_project(client):
     ).json()
     assert first_hits and "Copper tower" in first_hits[0]["content"]
     assert second_hits and "Silver tower" in second_hits[0]["content"]
+
+
+def test_script_index_runs_vector_job_when_rag_is_available(monkeypatch, client):
+    indexed_records = []
+
+    def fake_status(self):
+        return {"available": True, "qdrant_local": True}
+
+    def fake_index_chunks(self, records):
+        indexed_records.extend(records)
+
+    monkeypatch.setattr(main.LocalRAG, "status", fake_status)
+    monkeypatch.setattr(main.LocalRAG, "index_chunks", fake_index_chunks)
+    project = client.post("/api/v1/projects", json={"name": "vector-job"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "script", "content": "Scene\n\nVector smoke over the runway."},
+    ).json()
+
+    response = client.post(f"/api/v1/scripts/{script['id']}/index")
+
+    assert response.status_code == 200
+    index = client.get(f"/api/v1/scripts/{script['id']}/index").json()
+    assert index["embedding_status"] == "ready"
+    assert index["is_current"] is True
+    assert indexed_records
+    assert indexed_records[0]["content_type"] == "script_chunk"
+    assert indexed_records[0]["project_id"] == project["id"]
+
+
+def test_agent_plan_approval_queues_vector_job_when_rag_is_available(monkeypatch, client):
+    indexed_records = []
+
+    def fake_status(self):
+        return {"available": True, "qdrant_local": True}
+
+    def fake_index_chunks(self, records):
+        indexed_records.extend(records)
+
+    monkeypatch.setattr(main.LocalRAG, "status", fake_status)
+    monkeypatch.setattr(main.LocalRAG, "index_chunks", fake_index_chunks)
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "vector-plan", "initial_input": "A pilot follows vector lights."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Vector Plan",
+                "visual_style": "realistic",
+                "world_setting": "modern airport",
+                "aspect_ratio": "16:9",
+                "prompt_mode": "initial_frame",
+            },
+        },
+    )
+    plan = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={}).json()
+
+    approved = client.post(f"/api/v1/agent/plans/{plan['id']}/approve")
+
+    assert approved.status_code == 200
+    project_id = approved.json()["project_id"]
+    scripts = client.get(f"/api/v1/projects/{project_id}/scripts").json()
+    index = client.get(f"/api/v1/scripts/{scripts[0]['id']}/index").json()
+    assert index["embedding_status"] == "ready"
+    assert indexed_records
+    assert indexed_records[0]["project_id"] == project_id

@@ -1950,7 +1950,9 @@ def generate_agent_plan(
 
 
 @app.post(f"{API}/agent/plans/{{plan_id}}/approve", response_model=AgentSessionRead)
-def approve_agent_plan(plan_id: str, db: DbSession) -> AgentSession:
+def approve_agent_plan(
+    plan_id: str, background_tasks: BackgroundTasks, db: DbSession
+) -> AgentSession:
     plan = _require_workflow_plan(db, plan_id)
     session = plan.session
     if plan.missing_information:
@@ -1992,6 +1994,8 @@ def approve_agent_plan(plan_id: str, db: DbSession) -> AgentSession:
         document.status = "ready"
         _mark_document_current(db, document)
         db.commit()
+    elif embedding_job.status in {"pending", "failed"}:
+        background_tasks.add_task(_run_embedding_job, embedding_job.id, db.get_bind())
     return _require_agent_session(db, session.id)
 
 
@@ -2069,8 +2073,8 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
     return task
 
 
-def _run_embedding_job(job_id: str) -> None:
-    worker_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+def _run_embedding_job(job_id: str, bind=engine) -> None:
+    worker_session = sessionmaker(bind=bind, autoflush=False, expire_on_commit=False)()
     try:
         job = worker_session.get(EmbeddingJob, job_id)
         if job is None:
@@ -2193,7 +2197,7 @@ def create_script_index(
         _mark_document_current(db, document)
         db.commit()
     elif job.status in {"pending", "failed"}:
-        background_tasks.add_task(_run_embedding_job, job.id)
+        background_tasks.add_task(_run_embedding_job, job.id, db.get_bind())
     return _script_index_response(db, script_id)
 
 
@@ -2211,7 +2215,7 @@ def rebuild_script_index(
         _mark_document_current(db, document)
         db.commit()
     else:
-        background_tasks.add_task(_run_embedding_job, job.id)
+        background_tasks.add_task(_run_embedding_job, job.id, db.get_bind())
     return _script_index_response(db, script_id)
 
 
@@ -2261,7 +2265,7 @@ def rebuild_retrieval_index(
             db.commit()
         else:
             queued_embedding_jobs += 1
-            background_tasks.add_task(_run_embedding_job, job.id)
+            background_tasks.add_task(_run_embedding_job, job.id, db.get_bind())
     return {
         "project_id": payload.project_id,
         "script_count": len(scripts),
