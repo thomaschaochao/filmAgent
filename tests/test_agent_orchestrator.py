@@ -1,3 +1,6 @@
+import app.main as main
+
+
 def test_agent_can_plan_and_create_project_before_one_exists(client):
     created = client.post(
         "/api/v1/agent/sessions",
@@ -147,3 +150,64 @@ def test_script_index_rebuild_is_idempotent(client):
     assert second.status_code == 200
     assert second.json()["chunk_count"] == first.json()["chunk_count"] == 1
     assert second.json()["is_current"] is True
+
+
+def test_project_delete_removes_local_vectors(monkeypatch, client):
+    deleted_projects = []
+
+    def fake_status(self):
+        return {"qdrant_local": True, "available": False}
+
+    def fake_delete(self, project_id):
+        deleted_projects.append(project_id)
+
+    monkeypatch.setattr(main.LocalRAG, "status", fake_status)
+    monkeypatch.setattr(main.LocalRAG, "delete_project_vectors", fake_delete)
+    project = client.post("/api/v1/projects", json={"name": "delete-vectors"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "script", "content": "Scene\n\nThe hangar door closes."},
+    ).json()
+    assert client.post(f"/api/v1/scripts/{script['id']}/index").status_code == 200
+
+    response = client.delete(f"/api/v1/projects/{project['id']}")
+
+    assert response.status_code == 204
+    assert deleted_projects == [project["id"]]
+    assert client.get(f"/api/v1/projects/{project['id']}").status_code == 404
+    assert client.get(f"/api/v1/scripts/{script['id']}/index").status_code == 404
+
+
+def test_adopted_research_source_is_retrievable(monkeypatch, client):
+    async def fake_search_web(query):
+        return {
+            "query": query,
+            "summary": "Runway threshold lights are green and identify the runway start.",
+            "sources": [{"title": "Runway lights", "url": "https://example.com/runway"}],
+        }
+
+    monkeypatch.setattr(main, "search_web", fake_search_web)
+    session = client.post("/api/v1/agent/sessions", json={"title": "research"}).json()
+    search = client.post(
+        "/api/v1/agent/tools/search",
+        json={"query": "runway threshold lights", "session_id": session["id"]},
+    )
+    assert search.status_code == 200
+    source_id = search.json()["persisted_sources"][0]["id"]
+
+    adopted = client.post(
+        f"/api/v1/agent/research/{source_id}/adopt",
+        json={"adoption_reason": "Use for airport visual accuracy."},
+    )
+    assert adopted.status_code == 200
+    assert adopted.json()["adopted"] is True
+
+    retrieved = client.post(
+        "/api/v1/agent/retrieve",
+        json={"query": "green runway start threshold"},
+    )
+    assert retrieved.status_code == 200
+    hits = retrieved.json()
+    assert hits
+    assert hits[0]["source"] == "research"
+    assert "threshold lights" in hits[0]["content"]

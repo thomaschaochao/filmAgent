@@ -543,3 +543,20 @@ class WebSearchRequest(BaseModel):
 class PageFetchRequest(BaseModel):
     url: str = Field(min_length=8, max_length=2000)
     session_id: str | None = None
+
+
+class ResearchAdoptRequest(BaseModel):
+    adoption_reason: str = Field(default="", max_length=2000)
+
+
+class ResearchSourceRead(ORMModel):
+    id: str
+    session_id: str
+    query: str
+    title: str
+    url: str
+    summary: str
+    adoption_reason: str
+    fetch_method: str
+    adopted: bool
+    accessed_at: datetime

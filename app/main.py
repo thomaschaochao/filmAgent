@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import time
@@ -29,6 +30,7 @@ from app.models import (
     ChatScope,
     ChatThread,
     ChatThreadStatus,
+    CreativeMemory,
     EmbeddingJob,
     Project,
     ProjectStatus,
@@ -38,6 +40,7 @@ from app.models import (
     Scene,
     ScriptChunk,
     ScriptDocument,
+    ScriptSummary,
     ScriptVersion,
     Shot,
     StoryboardSnapshot,
@@ -69,6 +72,8 @@ from app.schemas import (
     PromptGenerateRequest,
     PromptRead,
     ProposalOperation,
+    ResearchAdoptRequest,
+    ResearchSourceRead,
     RetrievalHit,
     RetrievalQuery,
     RetrievalStatusRead,
@@ -214,6 +219,13 @@ def require_proposal(db: Session, proposal_id: str) -> ChangeProposal:
     if proposal is None:
         raise HTTPException(status_code=404, detail="Change proposal not found")
     return proposal
+
+
+def require_research_source(db: Session, source_id: str) -> ResearchSource:
+    source = db.get(ResearchSource, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Research source not found")
+    return source
 
 
 def _record_agent_run(
@@ -495,6 +507,33 @@ def update_project(project_id: str, payload: ProjectUpdate, db: DbSession) -> Pr
     db.commit()
     db.refresh(project)
     return project
+
+
+@app.delete(f"{API}/projects/{{project_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(project_id: str, db: DbSession) -> Response:
+    project = require_project(db, project_id)
+    if LocalRAG().status()["qdrant_local"]:
+        try:
+            LocalRAG().delete_project_vectors(project.id)
+        except Exception:
+            pass
+    document_ids = list(
+        db.scalars(select(ScriptDocument.id).where(ScriptDocument.project_id == project.id)).all()
+    )
+    if document_ids:
+        db.execute(delete(EmbeddingJob).where(EmbeddingJob.document_id.in_(document_ids)))
+        db.execute(delete(ScriptSummary).where(ScriptSummary.document_id.in_(document_ids)))
+        db.execute(delete(ScriptChunk).where(ScriptChunk.document_id.in_(document_ids)))
+        db.execute(delete(ScriptDocument).where(ScriptDocument.id.in_(document_ids)))
+    db.query(AgentSession).filter(AgentSession.project_id == project.id).update(
+        {AgentSession.project_id: None}
+    )
+    db.query(CreativeMemory).filter(CreativeMemory.project_id == project.id).update(
+        {CreativeMemory.project_id: None}
+    )
+    db.delete(project)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _next_script_version(db: Session, project_id: str) -> int:
@@ -2202,10 +2241,15 @@ def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]
     else:
         statement = statement.where(ScriptDocument.is_current.is_(True))
     chunks = list(db.scalars(statement).all())
-    if not chunks:
+    research_statement = select(ResearchSource).where(ResearchSource.adopted.is_(True))
+    if payload.project_id:
+        session_ids = select(AgentSession.id).where(AgentSession.project_id == payload.project_id)
+        research_statement = research_statement.where(ResearchSource.session_id.in_(session_ids))
+    research_sources = list(db.scalars(research_statement).all())
+    if not chunks and not research_sources:
         return []
     vector_script_id = payload.script_id
-    if vector_script_id is None:
+    if vector_script_id is None and chunks:
         current_document = db.get(ScriptDocument, chunks[0].document_id)
         vector_script_id = current_document.script_version_id if current_document else None
 
@@ -2219,7 +2263,6 @@ def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]
                     payload.query,
                     project_id=payload.project_id,
                     script_id=vector_script_id,
-                    content_type="script_chunk",
                     limit=20,
                 )
             }
@@ -2236,21 +2279,55 @@ def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]
         lexical = sum(haystack.count(term) for term in terms)
         vector = vector_scores.get(chunk.id, 0.0)
         if lexical or vector:
-            ranked.append((vector + min(lexical, 10) * 0.1, lexical, chunk))
-    ranked.sort(key=lambda item: (item[0], item[1], -item[2].sequence), reverse=True)
+            ranked.append(
+                (
+                    vector + min(lexical, 10) * 0.1,
+                    lexical,
+                    {
+                        "chunk_id": chunk.id,
+                        "content": chunk.content,
+                        "source": "hybrid" if chunk.id in vector_scores and lexical else (
+                            "vector" if chunk.id in vector_scores else "keyword"
+                        ),
+                        "chapter": chunk.chapter,
+                        "scene": chunk.scene,
+                        "characters": chunk.characters,
+                        "sequence": chunk.sequence,
+                    },
+                )
+            )
+    for source in research_sources:
+        haystack = f"{source.title} {source.query} {source.summary}".casefold()
+        lexical = sum(haystack.count(term) for term in terms)
+        vector = vector_scores.get(source.id, 0.0)
+        if lexical or vector:
+            ranked.append(
+                (
+                    vector + min(lexical, 10) * 0.1,
+                    lexical,
+                    {
+                        "chunk_id": source.id,
+                        "content": source.summary,
+                        "source": "research" if source.id not in vector_scores else "hybrid",
+                        "chapter": "research",
+                        "scene": source.title,
+                        "characters": [],
+                        "sequence": 0,
+                    },
+                )
+            )
+    ranked.sort(key=lambda item: (item[0], item[1], -item[2]["sequence"]), reverse=True)
     return [
         {
-            "chunk_id": chunk.id,
-            "content": chunk.content,
+            "chunk_id": item["chunk_id"],
+            "content": item["content"],
             "score": round(score, 6),
-            "source": "hybrid" if chunk.id in vector_scores and lexical else (
-                "vector" if chunk.id in vector_scores else "keyword"
-            ),
-            "chapter": chunk.chapter,
-            "scene": chunk.scene,
-            "characters": chunk.characters,
+            "source": item["source"],
+            "chapter": item["chapter"],
+            "scene": item["scene"],
+            "characters": item["characters"],
         }
-        for score, lexical, chunk in ranked[: payload.limit]
+        for score, lexical, item in ranked[: payload.limit]
     ]
 
 
@@ -2263,19 +2340,72 @@ async def agent_search_web(payload: WebSearchRequest, db: DbSession) -> dict:
     except (WebToolError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload.session_id:
+        persisted_sources = []
         for source in result["sources"]:
-            db.add(
-                ResearchSource(
-                    session_id=payload.session_id,
-                    query=payload.query,
-                    title=source.get("title", source["url"]),
-                    url=source["url"],
-                    summary=result["summary"][:4000],
-                    fetch_method="volcengine",
-                )
+            research = ResearchSource(
+                session_id=payload.session_id,
+                query=payload.query,
+                title=source.get("title", source["url"]),
+                url=source["url"],
+                summary=result["summary"][:4000],
+                fetch_method="volcengine",
+            )
+            db.add(research)
+            db.flush()
+            persisted_sources.append(
+                {
+                    "id": research.id,
+                    "title": research.title,
+                    "url": research.url,
+                    "adopted": research.adopted,
+                }
             )
         db.commit()
+        result["persisted_sources"] = persisted_sources
     return result
+
+
+@app.post(
+    f"{API}/agent/research/{{source_id}}/adopt",
+    response_model=ResearchSourceRead,
+)
+def adopt_research_source(
+    source_id: str, payload: ResearchAdoptRequest, db: DbSession
+) -> ResearchSource:
+    source = require_research_source(db, source_id)
+    source.adopted = True
+    source.adoption_reason = payload.adoption_reason.strip()
+    db.commit()
+    db.refresh(source)
+    session = _require_agent_session(db, source.session_id)
+    if source.summary.strip() and LocalRAG().status()["available"]:
+        try:
+            digest = hashlib.sha256(source.summary.encode("utf-8")).hexdigest()
+            LocalRAG().index_chunks(
+                [
+                    {
+                        "id": source.id,
+                        "content": source.summary,
+                        "chunk_id": source.id,
+                        "source_id": source.id,
+                        "session_id": source.session_id,
+                        "project_id": session.project_id,
+                        "script_id": "",
+                        "script_version": 0,
+                        "content_type": "research_source",
+                        "chapter": "research",
+                        "scene": source.title,
+                        "characters": [],
+                        "locations": [],
+                        "memory_status": "researched",
+                        "content_hash": digest,
+                        "is_current": True,
+                    }
+                ]
+            )
+        except Exception:
+            pass
+    return source
 
 
 @app.post(f"{API}/agent/tools/fetch")
