@@ -1,4 +1,5 @@
 import app.main as main
+from app.services.rag import LocalRAG
 
 
 def test_agent_can_plan_and_create_project_before_one_exists(client):
@@ -124,6 +125,43 @@ def test_retrieval_self_test_can_report_success(monkeypatch, client):
     body = response.json()
     assert body["available"] is True
     assert all(body["checks"].values())
+
+
+def test_local_rag_self_test_uses_uuid_point_ids(monkeypatch):
+    indexed_records = []
+
+    def fake_status(self):
+        return {
+            "available": True,
+            "configured": True,
+            "qdrant_local": True,
+            "model_cached": True,
+            "vector_backend": "qdrant_local",
+            "model": "BAAI/bge-m3",
+            "device": "cpu",
+            "collection": "filmagent_knowledge_v1",
+        }
+
+    def fake_index_chunks(self, records):
+        indexed_records.extend(records)
+
+    def fake_hybrid_search(self, *args, **kwargs):
+        return [{"chunk_id": indexed_records[0]["id"], "score": 1.0}]
+
+    def fake_delete_project_vectors(self, project_id):
+        assert project_id == "__self_test__"
+
+    monkeypatch.setattr(LocalRAG, "status", fake_status)
+    monkeypatch.setattr(LocalRAG, "index_chunks", fake_index_chunks)
+    monkeypatch.setattr(LocalRAG, "hybrid_search", fake_hybrid_search)
+    monkeypatch.setattr(LocalRAG, "delete_project_vectors", fake_delete_project_vectors)
+
+    result = LocalRAG().self_test()
+
+    assert result["available"] is True
+    assert indexed_records
+    assert indexed_records[0]["id"].count("-") == 4
+    assert not indexed_records[0]["id"].startswith("self-test-")
 
 
 def test_keyword_retrieval_is_available_without_embedding_dependencies(client):

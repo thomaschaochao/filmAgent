@@ -343,7 +343,7 @@ class LocalRAG:
         }
         if not status["available"]:
             return result
-        point_id = f"self-test-{uuid.uuid4()}"
+        point_id = str(uuid.uuid4())
         try:
             self.index_chunks(
                 [
