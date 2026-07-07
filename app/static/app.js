@@ -8,7 +8,7 @@ const state = {
   metrics: null, returnStep: "project",
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
   chatThreads: [], chatThread: null, chatTarget: null,
-  agentSessions: [], agentSession: null, retrievalStatus: null, showMasterAgent: false,
+  agentSessions: [], agentSession: null, retrievalStatus: null, crewStatus: null, showMasterAgent: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -187,6 +187,7 @@ function renderProject() {
 function renderMasterAgent() {
   const session = state.agentSession;
   const status = state.retrievalStatus;
+  const crew = state.crewStatus;
   const retrievalRows = status ? [
     ["Embedding", status.enabled ? "enabled" : "disabled"],
     ["Vector DB", status.qdrant_local ? "Qdrant Local" : "unavailable"],
@@ -194,6 +195,13 @@ function renderMasterAgent() {
     ["Device", status.device || "-"],
     ["Index", status.index_status || "-"],
     ["Jobs", `${status.pending_jobs || 0} pending / ${status.failed_jobs || 0} failed`],
+  ] : [];
+  const crewRows = crew ? [
+    ["Framework", crew.framework],
+    ["Installed", crew.installed ? "yes" : "no"],
+    ["Runtime", crew.active ? "CrewAI active" : `fallback: ${crew.fallback || "orchestrator"}`],
+    ["Roles", `${crew.roles?.length || 0}`],
+    ["Tasks", `${crew.tasks?.length || 0}`],
   ] : [];
   const plan = session?.plans?.at(-1);
   const activeTask = plan?.tasks?.find(task => task.status === "awaiting_approval" || task.status === "failed");
@@ -221,6 +229,12 @@ function renderMasterAgent() {
       <section class="panel agent-context-card"><span class="eyebrow">LOCAL RAG</span><h3>Retrieval Status</h3>
         ${retrievalRows.map(([key, value]) => `<div class="memory-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}
         ${!status.available ? `<div class="missing-box"><strong>Fallback active</strong><p>Embedding is unavailable, so the agent will use keyword retrieval.</p></div>` : ""}
+      </section>`);
+  }
+  if (agentContextColumn && crew) {
+    agentContextColumn.insertAdjacentHTML("beforeend", `
+      <section class="panel agent-context-card"><span class="eyebrow">AGENT RUNTIME</span><h3>CrewAI Status</h3>
+        ${crewRows.map(([key, value]) => `<div class="memory-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}
       </section>`);
   }
 }
@@ -274,8 +288,8 @@ function renderPrompts() {
 }
 
 async function loadProjects(selectId = null) {
-  [state.projects, state.agentSessions, state.retrievalStatus] = await Promise.all([
-    request("/projects"), request("/agent/sessions"), request("/agent/retrieval/status"),
+  [state.projects, state.agentSessions, state.retrievalStatus, state.crewStatus] = await Promise.all([
+    request("/projects"), request("/agent/sessions"), request("/agent/retrieval/status"), request("/agent/crew/status"),
   ]);
   state.agentSession = state.agentSessions[0] || null;
   if (selectId) await selectProject(selectId);

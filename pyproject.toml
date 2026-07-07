@@ -36,6 +36,9 @@ tools = [
   "crawl4ai>=0.7,<1.0",
   "mcp>=1.27,<2.0",
 ]
+agents = [
+  "crewai>=1.0,<2.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

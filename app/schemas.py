@@ -487,6 +487,30 @@ class AgentSessionRead(ORMModel):
     plans: list[WorkflowPlanRead] = Field(default_factory=list)
 
 
+class CrewRoleRead(BaseModel):
+    key: str
+    name: str
+    responsibility: str
+    tools: list[str]
+
+
+class CrewTaskRead(BaseModel):
+    stage: str
+    agent: str
+    description: str
+    requires_approval: bool
+
+
+class CrewStatusRead(BaseModel):
+    framework: str
+    requested: bool
+    installed: bool
+    active: bool
+    fallback: str
+    roles: list[CrewRoleRead]
+    tasks: list[CrewTaskRead]
+
+
 class WorkflowPlanCreate(BaseModel):
     project_spec: dict = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)

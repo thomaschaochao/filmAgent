@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     web_timeout_seconds: float = Field(default=30.0, ge=1, le=180)
     web_max_bytes: int = Field(default=2_000_000, ge=10_000, le=10_000_000)
     master_agent_ai_enabled: bool = True
+    agent_framework: str = "crewai"
+    crewai_enabled: bool = True
 
     @staticmethod
     def _secret_value(secret: SecretStr | None) -> str | None:

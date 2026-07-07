@@ -64,6 +64,7 @@ from app.schemas import (
     ChatThreadCreate,
     ChatThreadDetail,
     ChatThreadRead,
+    CrewStatusRead,
     ImageProviderRead,
     PageFetchRequest,
     ProjectCreate,
@@ -101,6 +102,7 @@ from app.services.chat import (
     validate_operation_scope,
     validate_shot_merge_operations,
 )
+from app.services.crew import crew_status
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
@@ -1901,6 +1903,11 @@ def list_agent_sessions(db: DbSession) -> list[AgentSession]:
         db.scalars(select(AgentSession.id).order_by(AgentSession.updated_at.desc()).limit(30)).all()
     )
     return [_require_agent_session(db, session_id) for session_id in ids]
+
+
+@app.get(f"{API}/agent/crew/status", response_model=CrewStatusRead)
+def get_agent_crew_status() -> dict:
+    return crew_status()
 
 
 @app.get(f"{API}/agent/sessions/{{session_id}}", response_model=AgentSessionRead)

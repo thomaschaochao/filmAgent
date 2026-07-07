@@ -23,6 +23,7 @@ from app.models import (
     WorkflowTask,
     WorkflowTaskStatus,
 )
+from app.services.crew import crew_plan_metadata
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.rag import chunk_script
 
@@ -195,6 +196,7 @@ def create_plan(
         "language": memory.get("language", "zh-CN"),
         "prompt_mode": memory.get("prompt_mode", "initial_frame"),
         "script_content": session.original_input,
+        "agent_runtime": crew_plan_metadata(),
         **project_spec,
     }
     missing = [label for key, label in REQUIRED_FACTS.items() if not spec.get(key)]

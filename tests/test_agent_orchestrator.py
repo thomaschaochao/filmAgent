@@ -1,4 +1,5 @@
 import app.main as main
+from app.services import crew as crew_service
 from app.services.rag import LocalRAG
 
 
@@ -78,6 +79,51 @@ def test_agent_plan_approval_is_idempotent(client):
     assert first.status_code == second.status_code == 200
     assert first.json()["project_id"] == second.json()["project_id"]
     assert len(client.get("/api/v1/projects").json()) == 1
+
+
+def test_crew_status_exposes_roles_without_secrets(client):
+    response = client.get("/api/v1/agent/crew/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["framework"] == "crewai"
+    assert body["requested"] is True
+    assert len(body["roles"]) >= 6
+    assert any(role["name"] == "ProducerAgent" for role in body["roles"])
+    assert "api_key" not in str(body).lower()
+
+
+def test_crew_status_can_report_active_runtime(monkeypatch, client):
+    monkeypatch.setattr(crew_service, "_crewai_installed", lambda: True)
+    response = client.get("/api/v1/agent/crew/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active"] is True
+    assert body["fallback"] == ""
+
+
+def test_workflow_plan_records_crew_runtime_metadata(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "crew-plan", "initial_input": "A pilot studies the runway."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Crew Plan",
+                "visual_style": "realistic",
+                "world_setting": "modern airport",
+                "aspect_ratio": "16:9",
+                "prompt_mode": "initial_frame",
+            },
+        },
+    )
+    plan = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={}).json()
+    runtime = plan["project_spec"]["agent_runtime"]
+    assert runtime["framework"] == "crewai"
+    assert "ProducerAgent" in runtime["roles"]
+    assert runtime["task_agents"]["assets"] == "asset"
 
 
 def test_retrieval_status_does_not_expose_local_paths(client):
