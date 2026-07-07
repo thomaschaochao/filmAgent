@@ -81,6 +81,8 @@ def test_retrieval_status_does_not_expose_local_paths(client):
     assert response.status_code == 200
     body = response.json()
     assert body["model"] == "BAAI/bge-m3"
+    assert body["vector_backend"] == "qdrant_local"
+    assert body["collection"] == "filmagent_knowledge_v1"
     assert "path" not in body
 
 
@@ -107,3 +109,41 @@ def test_keyword_retrieval_is_available_without_embedding_dependencies(client):
     assert hits
     assert "林深" in hits[0]["content"]
     assert hits[0]["source"] in {"keyword", "hybrid"}
+
+
+def test_project_retrieval_uses_current_script_index(client):
+    project = client.post("/api/v1/projects", json={"name": "current-index"}).json()
+    old_script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "old", "content": "Old scene\n\nPilot Alpha keeps the red map."},
+    ).json()
+    new_script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "new", "content": "New scene\n\nPilot Beta keeps the blue compass."},
+    ).json()
+    assert client.post(f"/api/v1/scripts/{old_script['id']}/index").status_code == 200
+    assert client.post(f"/api/v1/scripts/{new_script['id']}/index").status_code == 200
+
+    response = client.post(
+        "/api/v1/agent/retrieve",
+        json={"query": "red map blue compass", "project_id": project["id"]},
+    )
+    assert response.status_code == 200
+    contents = "\n".join(hit["content"] for hit in response.json())
+    assert "blue compass" in contents
+    assert "red map" not in contents
+
+
+def test_script_index_rebuild_is_idempotent(client):
+    project = client.post("/api/v1/projects", json={"name": "rebuild-index"}).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "script", "content": "Scene one\n\nA lantern glows by the runway."},
+    ).json()
+    first = client.post(f"/api/v1/scripts/{script['id']}/index/rebuild")
+    second = client.post(f"/api/v1/scripts/{script['id']}/index/rebuild")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["chunk_count"] == first.json()["chunk_count"] == 1
+    assert second.json()["is_current"] is True

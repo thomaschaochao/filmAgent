@@ -187,6 +187,14 @@ function renderProject() {
 function renderMasterAgent() {
   const session = state.agentSession;
   const status = state.retrievalStatus;
+  const retrievalRows = status ? [
+    ["Embedding", status.enabled ? "enabled" : "disabled"],
+    ["Vector DB", status.qdrant_local ? "Qdrant Local" : "unavailable"],
+    ["Model", status.model || "-"],
+    ["Device", status.device || "-"],
+    ["Index", status.index_status || "-"],
+    ["Jobs", `${status.pending_jobs || 0} pending / ${status.failed_jobs || 0} failed`],
+  ] : [];
   const plan = session?.plans?.at(-1);
   const activeTask = plan?.tasks?.find(task => task.status === "awaiting_approval" || task.status === "failed");
   const memories = session?.memories || [];
@@ -207,6 +215,14 @@ function renderMasterAgent() {
         </aside>
       </div>
     </div>`;
+  const agentContextColumn = $(".agent-context-column");
+  if (agentContextColumn && status) {
+    agentContextColumn.insertAdjacentHTML("beforeend", `
+      <section class="panel agent-context-card"><span class="eyebrow">LOCAL RAG</span><h3>Retrieval Status</h3>
+        ${retrievalRows.map(([key, value]) => `<div class="memory-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}
+        ${!status.available ? `<div class="missing-box"><strong>Fallback active</strong><p>Embedding is unavailable, so the agent will use keyword retrieval.</p></div>` : ""}
+      </section>`);
+  }
 }
 
 function renderScript() {

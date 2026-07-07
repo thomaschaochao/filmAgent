@@ -7,10 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
@@ -33,6 +34,7 @@ from app.models import (
     ProjectStatus,
     PromptVersion,
     ProposalStatus,
+    ResearchSource,
     Scene,
     ScriptChunk,
     ScriptDocument,
@@ -60,6 +62,7 @@ from app.schemas import (
     ChatThreadDetail,
     ChatThreadRead,
     ImageProviderRead,
+    PageFetchRequest,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -78,6 +81,7 @@ from app.schemas import (
     ShotUpdate,
     StoryboardDraft,
     StoryboardSnapshotRead,
+    WebSearchRequest,
     WorkflowPlanCreate,
     WorkflowPlanRead,
     WorkflowTaskRead,
@@ -93,6 +97,7 @@ from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
 from app.services.rag import LocalRAG
+from app.services.web_tools import WebToolError, fetch_page, search_web
 from app.services.workflow import (
     extract_assets,
     generate_asset_prompt,
@@ -1944,7 +1949,7 @@ def approve_agent_plan(plan_id: str, db: DbSession) -> AgentSession:
     if not LocalRAG().status()["available"]:
         embedding_job.status = "keyword_ready"
         document.status = "ready"
-        document.is_current = True
+        _mark_document_current(db, document)
         db.commit()
     return _require_agent_session(db, session.id)
 
@@ -2045,7 +2050,7 @@ def _run_embedding_job(job_id: str) -> None:
         else:
             job.status = "embedding"
             worker_session.commit()
-            rag.index(
+            rag.index_chunks(
                 [
                     {
                         "id": chunk.id,
@@ -2085,6 +2090,14 @@ def _run_embedding_job(job_id: str) -> None:
         worker_session.close()
 
 
+def _mark_document_current(db: Session, document: ScriptDocument) -> None:
+    db.query(ScriptDocument).filter(
+        ScriptDocument.project_id == document.project_id,
+        ScriptDocument.id != document.id,
+    ).update({ScriptDocument.is_current: False})
+    document.is_current = True
+
+
 def _script_index_response(db: Session, script_id: str) -> dict:
     document = db.scalar(
         select(ScriptDocument).where(ScriptDocument.script_version_id == script_id)
@@ -2119,9 +2132,38 @@ def create_script_index(
     if not LocalRAG().status()["available"]:
         job.status = "keyword_ready"
         document.status = "ready"
-        document.is_current = True
+        _mark_document_current(db, document)
         db.commit()
     elif job.status in {"pending", "failed"}:
+        background_tasks.add_task(_run_embedding_job, job.id)
+    return _script_index_response(db, script_id)
+
+
+@app.post(f"{API}/scripts/{{script_id}}/index/rebuild", response_model=ScriptIndexRead)
+def rebuild_script_index(
+    script_id: str, background_tasks: BackgroundTasks, db: DbSession
+) -> dict:
+    script = require_script(db, script_id)
+    existing = db.scalar(
+        select(ScriptDocument).where(ScriptDocument.script_version_id == script_id)
+    )
+    if existing:
+        if LocalRAG().status()["qdrant_local"]:
+            try:
+                LocalRAG().delete_script_vectors(script_id)
+            except Exception:
+                pass
+        db.execute(delete(EmbeddingJob).where(EmbeddingJob.document_id == existing.id))
+        db.execute(delete(ScriptChunk).where(ScriptChunk.document_id == existing.id))
+        db.delete(existing)
+        db.commit()
+    document, job = index_script(db, script)
+    if not LocalRAG().status()["available"]:
+        job.status = "keyword_ready"
+        document.status = "ready"
+        _mark_document_current(db, document)
+        db.commit()
+    else:
         background_tasks.add_task(_run_embedding_job, job.id)
     return _script_index_response(db, script_id)
 
@@ -2135,6 +2177,8 @@ def get_script_index(script_id: str, db: DbSession) -> dict:
 @app.get(f"{API}/agent/retrieval/status", response_model=RetrievalStatusRead)
 def get_retrieval_status(db: DbSession) -> dict:
     rag_status = LocalRAG().status()
+    latest_job = db.scalar(select(EmbeddingJob).order_by(EmbeddingJob.updated_at.desc()))
+    rag_status["index_status"] = latest_job.status if latest_job else rag_status["index_status"]
     rag_status["pending_jobs"] = db.scalar(
         select(func.count(EmbeddingJob.id)).where(
             EmbeddingJob.status.in_(["pending", "chunking", "embedding", "indexing"])
@@ -2155,9 +2199,15 @@ def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]
         statement = statement.where(ScriptDocument.project_id == payload.project_id)
     if payload.script_id:
         statement = statement.where(ScriptDocument.script_version_id == payload.script_id)
+    else:
+        statement = statement.where(ScriptDocument.is_current.is_(True))
     chunks = list(db.scalars(statement).all())
     if not chunks:
         return []
+    vector_script_id = payload.script_id
+    if vector_script_id is None:
+        current_document = db.get(ScriptDocument, chunks[0].document_id)
+        vector_script_id = current_document.script_version_id if current_document else None
 
     vector_scores: dict[str, float] = {}
     rag = LocalRAG()
@@ -2165,10 +2215,11 @@ def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]
         try:
             vector_scores = {
                 item["chunk_id"]: item["score"]
-                for item in rag.search(
+                for item in rag.hybrid_search(
                     payload.query,
                     project_id=payload.project_id,
-                    script_id=payload.script_id,
+                    script_id=vector_script_id,
+                    content_type="script_chunk",
                     limit=20,
                 )
             }
@@ -2201,3 +2252,38 @@ def retrieve_agent_context(payload: RetrievalQuery, db: DbSession) -> list[dict]
         }
         for score, lexical, chunk in ranked[: payload.limit]
     ]
+
+
+@app.post(f"{API}/agent/tools/search")
+async def agent_search_web(payload: WebSearchRequest, db: DbSession) -> dict:
+    if payload.session_id:
+        _require_agent_session(db, payload.session_id)
+    try:
+        result = await search_web(payload.query)
+    except (WebToolError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if payload.session_id:
+        for source in result["sources"]:
+            db.add(
+                ResearchSource(
+                    session_id=payload.session_id,
+                    query=payload.query,
+                    title=source.get("title", source["url"]),
+                    url=source["url"],
+                    summary=result["summary"][:4000],
+                    fetch_method="volcengine",
+                )
+            )
+        db.commit()
+    return result
+
+
+@app.post(f"{API}/agent/tools/fetch")
+async def agent_fetch_page(payload: PageFetchRequest, db: DbSession) -> dict:
+    if payload.session_id:
+        _require_agent_session(db, payload.session_id)
+    try:
+        result = await fetch_page(payload.url)
+    except (WebToolError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**result, "content": result["content"][: get_settings().web_max_bytes]}

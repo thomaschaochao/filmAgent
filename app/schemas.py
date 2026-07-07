@@ -506,9 +506,13 @@ class RetrievalStatusRead(BaseModel):
     enabled: bool
     configured: bool
     available: bool
+    vector_backend: str
+    qdrant_local: bool
+    collection: str
     model: str
     device: str
     model_cached: bool
+    index_status: str
     pending_jobs: int
     failed_jobs: int
     error: str | None
@@ -529,3 +533,13 @@ class RetrievalHit(BaseModel):
     chapter: str
     scene: str
     characters: list[str]
+
+
+class WebSearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=1000)
+    session_id: str | None = None
+
+
+class PageFetchRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2000)
+    session_id: str | None = None

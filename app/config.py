@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     embedding_model_path: Path = Path("storage/models/bge-m3")
     qdrant_path: Path = Path("storage/vector/qdrant")
     vector_collection: str = "filmagent_knowledge_v1"
+    ark_search_model: str = ""
+    web_timeout_seconds: float = Field(default=30.0, ge=1, le=180)
+    web_max_bytes: int = Field(default=2_000_000, ge=10_000, le=10_000_000)
+    master_agent_ai_enabled: bool = True
 
     @staticmethod
     def _secret_value(secret: SecretStr | None) -> str | None:

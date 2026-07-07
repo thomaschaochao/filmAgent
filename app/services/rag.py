@@ -102,7 +102,11 @@ def chunk_script(text: str, target_tokens: int = 1000, hard_limit: int = 1600) -
 
 
 class LocalRAG:
-    """Optional BGE-M3/Qdrant adapter. Import failures degrade without blocking FilmPilot."""
+    """Local BGE-M3/Qdrant adapter.
+
+    SQLite remains the source of truth. Qdrant stores only vectors and rebuildable metadata;
+    callers must use chunk ids returned from search to read authoritative text from SQLite.
+    """
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -111,21 +115,36 @@ class LocalRAG:
 
     def status(self) -> dict[str, Any]:
         dependencies = True
+        qdrant_local = True
         error = None
         try:
             import FlagEmbedding  # noqa: F401
-            import qdrant_client  # noqa: F401
         except ImportError:
             dependencies = False
             error = "Local RAG dependencies are not installed. Install the 'rag' extra."
+        try:
+            import qdrant_client  # noqa: F401
+        except ImportError:
+            qdrant_local = False
+            error = "Qdrant Local dependency is not installed. Install the 'rag' extra."
         model_path = self._path(self.settings.embedding_model_path)
+        available = (
+            self.settings.embedding_enabled
+            and dependencies
+            and qdrant_local
+            and model_path.exists()
+        )
         return {
             "enabled": self.settings.embedding_enabled,
             "configured": dependencies,
-            "available": self.settings.embedding_enabled and dependencies and model_path.exists(),
+            "available": available,
+            "vector_backend": "qdrant_local",
+            "qdrant_local": qdrant_local,
+            "collection": self.settings.vector_collection,
             "model": self.settings.embedding_model,
             "device": self._device(),
             "model_cached": model_path.exists(),
+            "index_status": "ready" if available else "keyword_fallback",
             "error": error,
         }
 
@@ -194,9 +213,11 @@ class LocalRAG:
                     raise
                 batch_size = max(1, batch_size // 2)
 
-    def index(self, records: list[dict[str, Any]]) -> None:
+    def index_chunks(self, records: list[dict[str, Any]]) -> None:
         from qdrant_client import models
 
+        if not records:
+            return
         dense, sparse = self.embed([record["content"] for record in records])
         points = []
         for record, dense_vector, sparse_vector in zip(records, dense, sparse, strict=True):
@@ -214,17 +235,19 @@ class LocalRAG:
             )
         self._client.upsert(self.settings.vector_collection, points=points, wait=True)
 
-    def search(
+    def index(self, records: list[dict[str, Any]]) -> None:
+        """Backward-compatible alias for existing callers."""
+        self.index_chunks(records)
+
+    def _filter(
         self,
-        query: str,
         *,
         project_id: str | None = None,
         script_id: str | None = None,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
+        content_type: str | None = None,
+    ) -> Any:
         from qdrant_client import models
 
-        dense, sparse = self.embed([query])
         conditions = []
         if project_id:
             conditions.append(
@@ -238,6 +261,26 @@ class LocalRAG:
                     key="script_id", match=models.MatchValue(value=script_id)
                 )
             )
+        if content_type:
+            conditions.append(
+                models.FieldCondition(
+                    key="content_type", match=models.MatchValue(value=content_type)
+                )
+            )
+        return models.Filter(must=conditions) if conditions else None
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        script_id: str | None = None,
+        content_type: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        from qdrant_client import models
+
+        dense, sparse = self.embed([query])
         result = self._client.query_points(
             collection_name=self.settings.vector_collection,
             prefetch=[
@@ -251,7 +294,9 @@ class LocalRAG:
                 ),
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
-            query_filter=models.Filter(must=conditions) if conditions else None,
+            query_filter=self._filter(
+                project_id=project_id, script_id=script_id, content_type=content_type
+            ),
             limit=limit,
             with_payload=True,
         )
@@ -259,3 +304,35 @@ class LocalRAG:
             {"chunk_id": str(point.payload["chunk_id"]), "score": float(point.score)}
             for point in result.points
         ]
+
+    def search(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        script_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Backward-compatible alias for existing callers."""
+        return self.hybrid_search(query, project_id=project_id, script_id=script_id, limit=limit)
+
+    def delete_project_vectors(self, project_id: str) -> None:
+        self._delete_by_filter(project_id=project_id)
+
+    def delete_script_vectors(self, script_id: str) -> None:
+        self._delete_by_filter(script_id=script_id)
+
+    def _delete_by_filter(
+        self, *, project_id: str | None = None, script_id: str | None = None
+    ) -> None:
+        from qdrant_client import models
+
+        query_filter = self._filter(project_id=project_id, script_id=script_id)
+        if query_filter is None:
+            raise ValueError("A project_id or script_id is required to delete vectors")
+        self._load()
+        self._client.delete(
+            collection_name=self.settings.vector_collection,
+            points_selector=models.FilterSelector(filter=query_filter),
+            wait=True,
+        )

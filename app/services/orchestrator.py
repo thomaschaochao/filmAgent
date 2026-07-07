@@ -8,6 +8,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import (
     AgentMessage,
     AgentSession,
@@ -22,6 +23,7 @@ from app.models import (
     WorkflowTask,
     WorkflowTaskStatus,
 )
+from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.rag import chunk_script
 
 REQUIRED_FACTS = {
@@ -59,7 +61,15 @@ class ConversationResult:
     missing: list[str]
 
 
-def upsert_memory(db: Session, session: AgentSession, key: str, value: str) -> CreativeMemory:
+def upsert_memory(
+    db: Session,
+    session: AgentSession,
+    key: str,
+    value: str,
+    *,
+    status: str = "confirmed",
+    source_type: str = "user",
+) -> CreativeMemory:
     memory = db.scalar(
         select(CreativeMemory).where(
             CreativeMemory.session_id == session.id,
@@ -74,14 +84,14 @@ def upsert_memory(db: Session, session: AgentSession, key: str, value: str) -> C
             category=FACT_CATEGORIES.get(key, "decision"),
             key=key,
             value=value,
-            status="confirmed",
-            source_type="user",
+            status=status,
+            source_type=source_type,
         )
         db.add(memory)
     else:
         memory.value = value
-        memory.status = "confirmed"
-        memory.source_type = "user"
+        memory.status = status
+        memory.source_type = source_type
     return memory
 
 
@@ -101,13 +111,50 @@ def _infer_facts(content: str) -> dict[str, str]:
     return facts
 
 
+def _extract_with_ai(session: AgentSession, content: str) -> tuple[dict[str, str], str | None]:
+    if not get_settings().master_agent_ai_enabled:
+        return {}, None
+    history = [
+        {"role": message.role.value, "content": message.content}
+        for message in session.messages[-12:]
+    ]
+    memory = {item.key: item.value for item in session.memories if item.status != "superseded"}
+    system = """You are FilmPilot's master pre-production agent. Return one JSON object only.
+Extract only information supported by the user's message. `facts` may contain name,
+visual_style, world_setting, aspect_ratio, language, prompt_mode, genre, tone, audience.
+Do not invent missing facts. `reply` should briefly acknowledge the request and ask about
+important missing production information. Never claim that work has been executed."""
+    try:
+        result = DeepSeekClient().chat_json(
+            system,
+            str({"confirmed_memory": memory, "recent_messages": history, "message": content}),
+        )
+    except (DeepSeekError, RuntimeError):
+        return {}, None
+    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+    safe_facts = {
+        key: str(value).strip()
+        for key, value in facts.items()
+        if key in FACT_CATEGORIES and str(value).strip()
+    }
+    reply = result.get("reply")
+    return safe_facts, str(reply).strip() if reply else None
+
+
 def continue_conversation(
     db: Session, session: AgentSession, content: str, explicit_facts: dict[str, str]
 ) -> ConversationResult:
     db.add(AgentMessage(session_id=session.id, role=ChatMessageRole.user, content=content))
     if not session.original_input:
         session.original_input = content
-    for key, value in {**_infer_facts(content), **explicit_facts}.items():
+    ai_facts, ai_reply = _extract_with_ai(session, content)
+    inferred_facts = {**_infer_facts(content), **ai_facts}
+    for key, value in inferred_facts.items():
+        if value.strip() and key not in explicit_facts:
+            upsert_memory(
+                db, session, key, value.strip(), status="inferred", source_type="assistant"
+            )
+    for key, value in explicit_facts.items():
         if value.strip():
             upsert_memory(db, session, key, value.strip())
     current = {
@@ -119,7 +166,7 @@ def continue_conversation(
     missing = [label for key, label in REQUIRED_FACTS.items() if not current.get(key)]
     if missing:
         session.status = AgentSessionStatus.clarifying
-        reply = "在生成制作计划前，还需要确认：" + "、".join(missing) + "。"
+        reply = ai_reply or "在生成制作计划前，还需要确认：" + "、".join(missing) + "。"
     else:
         session.status = AgentSessionStatus.plan_ready
         reply = "关键信息已经齐全。我可以生成完整制作计划，确认后再分阶段执行。"
