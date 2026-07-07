@@ -502,6 +502,18 @@ class ScriptIndexRead(BaseModel):
     embedding_model: str
 
 
+class RetrievalRebuildRequest(BaseModel):
+    project_id: str | None = None
+
+
+class RetrievalRebuildRead(BaseModel):
+    project_id: str | None
+    script_count: int
+    rebuilt_count: int
+    queued_embedding_jobs: int
+    fallback_count: int
+
+
 class RetrievalStatusRead(BaseModel):
     enabled: bool
     configured: bool

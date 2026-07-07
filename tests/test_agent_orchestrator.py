@@ -211,3 +211,66 @@ def test_adopted_research_source_is_retrievable(monkeypatch, client):
     assert hits
     assert hits[0]["source"] == "research"
     assert "threshold lights" in hits[0]["content"]
+
+
+def test_retrieval_rebuild_restores_indexes_from_sqlite(client):
+    project = client.post("/api/v1/projects", json={"name": "full-rebuild"}).json()
+    first_script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "one", "content": "Scene one\n\nThe red beacon flashes."},
+    ).json()
+    second_script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "two", "content": "Scene two\n\nThe blue flare rises."},
+    ).json()
+    assert client.post(f"/api/v1/scripts/{first_script['id']}/index").status_code == 200
+    assert client.post(f"/api/v1/scripts/{second_script['id']}/index").status_code == 200
+
+    rebuild = client.post("/api/v1/agent/retrieval/rebuild", json={})
+
+    assert rebuild.status_code == 200
+    body = rebuild.json()
+    assert body["script_count"] == 2
+    assert body["rebuilt_count"] == 2
+    assert body["fallback_count"] == 2
+    response = client.post(
+        "/api/v1/agent/retrieve",
+        json={"query": "blue flare", "project_id": project["id"]},
+    )
+    assert response.status_code == 200
+    contents = "\n".join(hit["content"] for hit in response.json())
+    assert "blue flare" in contents
+    assert "red beacon" not in contents
+
+
+def test_retrieval_rebuild_can_be_scoped_to_project(client):
+    first_project = client.post("/api/v1/projects", json={"name": "first"}).json()
+    second_project = client.post("/api/v1/projects", json={"name": "second"}).json()
+    first_script = client.post(
+        f"/api/v1/projects/{first_project['id']}/scripts",
+        json={"title": "first", "content": "First project\n\nCopper tower at dawn."},
+    ).json()
+    second_script = client.post(
+        f"/api/v1/projects/{second_project['id']}/scripts",
+        json={"title": "second", "content": "Second project\n\nSilver tower at dusk."},
+    ).json()
+    client.post(f"/api/v1/scripts/{first_script['id']}/index")
+    client.post(f"/api/v1/scripts/{second_script['id']}/index")
+
+    rebuild = client.post(
+        "/api/v1/agent/retrieval/rebuild",
+        json={"project_id": first_project["id"]},
+    )
+
+    assert rebuild.status_code == 200
+    assert rebuild.json()["script_count"] == 1
+    first_hits = client.post(
+        "/api/v1/agent/retrieve",
+        json={"query": "copper tower", "project_id": first_project["id"]},
+    ).json()
+    second_hits = client.post(
+        "/api/v1/agent/retrieve",
+        json={"query": "silver tower", "project_id": second_project["id"]},
+    ).json()
+    assert first_hits and "Copper tower" in first_hits[0]["content"]
+    assert second_hits and "Silver tower" in second_hits[0]["content"]

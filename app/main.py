@@ -76,6 +76,8 @@ from app.schemas import (
     ResearchSourceRead,
     RetrievalHit,
     RetrievalQuery,
+    RetrievalRebuildRead,
+    RetrievalRebuildRequest,
     RetrievalStatusRead,
     SceneRead,
     ScriptCreate,
@@ -2162,6 +2164,23 @@ def _script_index_response(db: Session, script_id: str) -> dict:
     }
 
 
+def _delete_script_index(db: Session, script_id: str, *, delete_vectors: bool = True) -> None:
+    existing = db.scalar(
+        select(ScriptDocument).where(ScriptDocument.script_version_id == script_id)
+    )
+    if existing is None:
+        return
+    if delete_vectors and LocalRAG().status()["qdrant_local"]:
+        try:
+            LocalRAG().delete_script_vectors(script_id)
+        except Exception:
+            pass
+    db.execute(delete(EmbeddingJob).where(EmbeddingJob.document_id == existing.id))
+    db.execute(delete(ScriptSummary).where(ScriptSummary.document_id == existing.id))
+    db.execute(delete(ScriptChunk).where(ScriptChunk.document_id == existing.id))
+    db.delete(existing)
+
+
 @app.post(f"{API}/scripts/{{script_id}}/index", response_model=ScriptIndexRead)
 def create_script_index(
     script_id: str, background_tasks: BackgroundTasks, db: DbSession
@@ -2183,19 +2202,8 @@ def rebuild_script_index(
     script_id: str, background_tasks: BackgroundTasks, db: DbSession
 ) -> dict:
     script = require_script(db, script_id)
-    existing = db.scalar(
-        select(ScriptDocument).where(ScriptDocument.script_version_id == script_id)
-    )
-    if existing:
-        if LocalRAG().status()["qdrant_local"]:
-            try:
-                LocalRAG().delete_script_vectors(script_id)
-            except Exception:
-                pass
-        db.execute(delete(EmbeddingJob).where(EmbeddingJob.document_id == existing.id))
-        db.execute(delete(ScriptChunk).where(ScriptChunk.document_id == existing.id))
-        db.delete(existing)
-        db.commit()
+    _delete_script_index(db, script_id)
+    db.commit()
     document, job = index_script(db, script)
     if not LocalRAG().status()["available"]:
         job.status = "keyword_ready"
@@ -2211,6 +2219,56 @@ def rebuild_script_index(
 def get_script_index(script_id: str, db: DbSession) -> dict:
     require_script(db, script_id)
     return _script_index_response(db, script_id)
+
+
+@app.post(f"{API}/agent/retrieval/rebuild", response_model=RetrievalRebuildRead)
+def rebuild_retrieval_index(
+    payload: RetrievalRebuildRequest, background_tasks: BackgroundTasks, db: DbSession
+) -> dict:
+    if payload.project_id:
+        require_project(db, payload.project_id)
+    statement = select(ScriptVersion)
+    if payload.project_id:
+        statement = statement.where(ScriptVersion.project_id == payload.project_id)
+    scripts = list(
+        db.scalars(
+            statement.order_by(ScriptVersion.project_id, ScriptVersion.version)
+        ).all()
+    )
+    rag_status = LocalRAG().status()
+    if rag_status["qdrant_local"]:
+        project_ids = sorted({script.project_id for script in scripts})
+        for project_id in project_ids:
+            try:
+                LocalRAG().delete_project_vectors(project_id)
+            except Exception:
+                pass
+    for script in scripts:
+        _delete_script_index(db, script.id, delete_vectors=False)
+    db.commit()
+
+    rebuilt_count = 0
+    queued_embedding_jobs = 0
+    fallback_count = 0
+    for script in scripts:
+        document, job = index_script(db, script)
+        rebuilt_count += 1
+        if not rag_status["available"]:
+            job.status = "keyword_ready"
+            document.status = "ready"
+            _mark_document_current(db, document)
+            fallback_count += 1
+            db.commit()
+        else:
+            queued_embedding_jobs += 1
+            background_tasks.add_task(_run_embedding_job, job.id)
+    return {
+        "project_id": payload.project_id,
+        "script_count": len(scripts),
+        "rebuilt_count": rebuilt_count,
+        "queued_embedding_jobs": queued_embedding_jobs,
+        "fallback_count": fallback_count,
+    }
 
 
 @app.get(f"{API}/agent/retrieval/status", response_model=RetrievalStatusRead)
