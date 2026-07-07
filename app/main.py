@@ -114,7 +114,10 @@ from app.services.crew import crew_status
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
-from app.services.prompt_strategy import classify_shot_prompt_strategy
+from app.services.prompt_strategy import (
+    build_director_overhead_prompt,
+    classify_shot_prompt_strategy,
+)
 from app.services.rag import LocalRAG
 from app.services.web_tools import WebToolError, fetch_page, search_web
 from app.services.workflow import (
@@ -1214,6 +1217,7 @@ def create_prompt(
     project = shot.scene.project
     request = payload or PromptGenerateRequest()
     prompt_strategy = classify_shot_prompt_strategy(shot)
+    director_overhead = build_director_overhead_prompt(shot, prompt_strategy)
     resolved_frame_count = (
         request.frame_count
         if request.frame_count is not None
@@ -1269,6 +1273,7 @@ def create_prompt(
                 else None
             ),
             "strategy": prompt_strategy.model_dump(),
+            "director_overhead": director_overhead,
             "mode_source": (
                 "user_selected"
                 if request.mode != prompt_strategy.recommended_mode

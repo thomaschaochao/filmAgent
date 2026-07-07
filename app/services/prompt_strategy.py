@@ -20,6 +20,44 @@ class PromptStrategy:
         return asdict(self)
 
 
+def build_director_overhead_prompt(shot: Shot, strategy: PromptStrategy) -> dict | None:
+    if not strategy.needs_director_overhead:
+        return None
+    asset_references = [
+        f"@{asset.name}"
+        for asset in shot.scene.project.assets
+        if asset.name.casefold()
+        in " ".join((shot.subject or "", shot.action or "", shot.dialogue or "")).casefold()
+    ] if shot.scene and shot.scene.project else []
+    subject = " ".join(asset_references) if asset_references else shot.subject
+    prompt = (
+        "Director overhead blocking reference diagram, top-down floor plan view, "
+        "not a cinematic camera frame. "
+        f"Subject(s): {subject}. "
+        f"Environment: {shot.environment or 'current scene space'}. "
+        f"Action beats to map: {shot.action or 'specified shot action'}. "
+        f"Camera movement reference: {shot.camera_motion or 'static camera'}. "
+        "Show exact character positions, start and end marks, movement arrows, spacing, "
+        "scene boundaries, entrances/exits, major props, camera position and camera path. "
+        "Use a clean production planning style with simple labels, readable arrows, "
+        "consistent scale, no dramatic perspective, no character portrait rendering. "
+        "The diagram is only for staging continuity and must keep all action inside the "
+        "physical environment boundaries."
+    )
+    return {
+        "type": "director_overhead_reference",
+        "positive_prompt": prompt,
+        "negative_prompt": (
+            "cinematic perspective, portrait, close-up, dramatic lighting, text clutter, "
+            "unclear arrows, inconsistent scale, impossible body positions, "
+            "action outside boundaries"
+        ),
+        "asset_references": asset_references,
+        "purpose": "blocking_continuity",
+        "reasons": strategy.reasons,
+    }
+
+
 LARGE_ACTION_TERMS = {
     "chase",
     "fight",

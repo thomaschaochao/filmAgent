@@ -574,6 +574,65 @@ def test_delete_shot_reorders_remaining_shots(client, monkeypatch):
     assert len(restore.json()[0]["shots"]) == 4
 
 
+def test_complex_shot_prompt_metadata_includes_director_overhead(client, monkeypatch):
+    from app.schemas import PromptDraft, SceneDraft, ShotDraft, StoryboardDraft
+
+    project = client.post(
+        "/api/v1/projects",
+        json={"name": "Blocking Test", "visual_style": "realistic"},
+    ).json()
+    script = client.post(
+        f"/api/v1/projects/{project['id']}/scripts",
+        json={"title": "Gate", "content": "A group crosses the airport gate."},
+    ).json()
+    client.post(f"/api/v1/scripts/{script['id']}/approve")
+    storyboard = StoryboardDraft(
+        scenes=[
+            SceneDraft(
+                sequence=1,
+                heading="Airport gate",
+                shots=[
+                    ShotDraft(
+                        sequence=1,
+                        script_reference="A group crosses the airport gate.",
+                        subject="group of passengers and Pilot",
+                        action=(
+                            "the group moves from the gate through the corridor "
+                            "as Pilot crosses behind them"
+                        ),
+                        environment="airport gate to corridor",
+                        shot_size="wide",
+                        camera_angle="high angle",
+                        camera_motion="tracking pan",
+                        duration_seconds=5.5,
+                    )
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr("app.main.generate_storyboard", lambda *args: storyboard)
+    scenes = client.post(f"/api/v1/scripts/{script['id']}/shots/generate").json()
+    monkeypatch.setattr(
+        "app.main.generate_prompt",
+        lambda *args, **kwargs: PromptDraft(
+            positive_prompt="complex blocking storyboard prompt",
+            subject_position="group at the gate",
+            action_constraints="only specified crossing action",
+            spatial_constraints="inside airport gate and corridor",
+            camera_strategy="wide tracking view",
+        ),
+    )
+
+    response = client.post(f"/api/v1/shots/{scenes[0]['shots'][0]['id']}/prompts/generate")
+
+    assert response.status_code == 200
+    metadata = response.json()["prompt_metadata"]
+    assert metadata["strategy"]["needs_director_overhead"] is True
+    assert metadata["director_overhead"]["type"] == "director_overhead_reference"
+    assert "top-down floor plan" in metadata["director_overhead"]["positive_prompt"]
+    assert "movement arrows" in metadata["director_overhead"]["positive_prompt"]
+
+
 def test_storyboard_business_errors_are_repaired_and_measured(client, monkeypatch):
     from app.schemas import SceneDraft, ShotDraft, StoryboardDraft
 
