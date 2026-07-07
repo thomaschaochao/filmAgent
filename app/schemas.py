@@ -515,6 +515,16 @@ class CrewTaskRead(BaseModel):
     requires_approval: bool
 
 
+class CrewToolRead(BaseModel):
+    key: str
+    owner_agent: str
+    description: str
+    scope: str
+    mutates_state: bool
+    requires_user_approval: bool
+    checkpoint_event: str
+
+
 class CrewStatusRead(BaseModel):
     framework: str
     requested: bool
@@ -523,6 +533,9 @@ class CrewStatusRead(BaseModel):
     fallback: str
     roles: list[CrewRoleRead]
     tasks: list[CrewTaskRead]
+    tools: list[CrewToolRead]
+    memory_isolation: dict
+    checkpoint_events: list[str]
 
 
 class WorkflowPlanCreate(BaseModel):

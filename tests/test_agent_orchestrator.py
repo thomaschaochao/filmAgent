@@ -89,6 +89,16 @@ def test_crew_status_exposes_roles_without_secrets(client):
     assert body["requested"] is True
     assert len(body["roles"]) >= 6
     assert any(role["name"] == "ProducerAgent" for role in body["roles"])
+    tools = {tool["key"]: tool for tool in body["tools"]}
+    assert tools["retrieve_context"]["scope"] == "read:rag"
+    assert tools["generate_shot_prompts"]["owner_agent"] == "prompt"
+    assert tools["generate_shot_prompts"]["mutates_state"] is True
+    assert body["memory_isolation"]["prompt"]["write"] == [
+        "prompt_versions",
+        "prompt_strategy_snapshot",
+    ]
+    assert "tool_start" in body["checkpoint_events"]
+    assert "task_completed" in body["checkpoint_events"]
     assert "api_key" not in str(body).lower()
 
 
@@ -124,6 +134,12 @@ def test_workflow_plan_records_crew_runtime_metadata(client):
     assert runtime["framework"] == "crewai"
     assert "ProducerAgent" in runtime["roles"]
     assert runtime["task_agents"]["assets"] == "asset"
+    assert runtime["tool_registry"]["retrieve_context"]["scope"] == "read:rag"
+    assert runtime["tool_registry"]["create_project"]["requires_user_approval"] is True
+    assert runtime["memory_isolation"]["research"]["write"] == [
+        "research_sources_adopted_summary_only"
+    ]
+    assert "agent_handoff" in runtime["checkpoint_events"]
 
 
 def _approved_agent_plan(client):

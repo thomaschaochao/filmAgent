@@ -23,6 +23,17 @@ class CrewTaskBlueprint:
     requires_approval: bool = True
 
 
+@dataclass(frozen=True)
+class CrewToolSpec:
+    key: str
+    owner_agent: str
+    description: str
+    scope: str
+    mutates_state: bool
+    requires_user_approval: bool
+    checkpoint_event: str
+
+
 CREW_ROLES = (
     CrewRole(
         key="producer",
@@ -65,6 +76,108 @@ CREW_ROLES = (
         name="ReviewAgent",
         responsibility="Check consistency, missing context, unsafe edits, and scope violations.",
         tools=("retrieve_context", "get_workflow_status"),
+    ),
+)
+
+CREW_TOOLS = (
+    CrewToolSpec(
+        key="retrieve_context",
+        owner_agent="shared",
+        description="Read scoped RAG context through the retrieval service only.",
+        scope="read:rag",
+        mutates_state=False,
+        requires_user_approval=False,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="search_web",
+        owner_agent="research",
+        description="Search public web results for user-approved research tasks.",
+        scope="read:web",
+        mutates_state=False,
+        requires_user_approval=False,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="fetch_page",
+        owner_agent="research",
+        description="Fetch selected web pages; only adopted summaries may be persisted.",
+        scope="read:web",
+        mutates_state=False,
+        requires_user_approval=False,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="create_project",
+        owner_agent="producer",
+        description="Create an idempotent project after the user approves the plan.",
+        scope="write:project",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="save_script",
+        owner_agent="script",
+        description="Save a versioned script document without overwriting history.",
+        scope="write:script",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="approve_script",
+        owner_agent="script",
+        description="Move the current script into approved workflow state.",
+        scope="write:script",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="extract_assets",
+        owner_agent="asset",
+        description="Extract characters, locations, and props idempotently.",
+        scope="write:asset",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="generate_asset_prompts",
+        owner_agent="asset",
+        description="Generate versioned prompts for approved assets.",
+        scope="write:asset_prompt",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="generate_storyboard",
+        owner_agent="shot",
+        description="Create duration-aware shot breakdowns with spatial constraints.",
+        scope="write:shot",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="generate_shot_prompts",
+        owner_agent="prompt",
+        description="Generate initial-frame, storyboard, or Seedance prompt drafts.",
+        scope="write:shot_prompt",
+        mutates_state=True,
+        requires_user_approval=True,
+        checkpoint_event="tool_success",
+    ),
+    CrewToolSpec(
+        key="get_workflow_status",
+        owner_agent="review",
+        description="Read workflow task state, checkpoints, and pending approvals.",
+        scope="read:workflow",
+        mutates_state=False,
+        requires_user_approval=False,
+        checkpoint_event="tool_success",
     ),
 )
 
@@ -112,6 +225,53 @@ CREW_TASKS = (
     ),
 )
 
+MEMORY_ISOLATION = {
+    "producer": {
+        "read": ["confirmed_memory", "recent_messages", "workflow_status"],
+        "write": ["workflow_plan", "coordination_decision"],
+        "forbidden": ["secrets", "unadopted_web_pages", "image_binary"],
+    },
+    "script": {
+        "read": ["confirmed_memory", "script_current_version", "script_summaries"],
+        "write": ["script_versions", "script_summaries"],
+        "forbidden": ["asset_private_drafts", "raw_tool_logs"],
+    },
+    "research": {
+        "read": ["confirmed_memory", "research_requests"],
+        "write": ["research_sources_adopted_summary_only"],
+        "forbidden": ["unadopted_web_pages", "secrets"],
+    },
+    "asset": {
+        "read": ["confirmed_memory", "script_chunks", "asset_versions"],
+        "write": ["asset_records", "asset_prompt_versions"],
+        "forbidden": ["other_project_assets", "secrets"],
+    },
+    "shot": {
+        "read": ["confirmed_memory", "script_chunks", "asset_references"],
+        "write": ["scene_records", "shot_records"],
+        "forbidden": ["locked_shot_mutations", "other_project_shots"],
+    },
+    "prompt": {
+        "read": ["confirmed_memory", "shot_records", "asset_references", "retrieved_context"],
+        "write": ["prompt_versions", "prompt_strategy_snapshot"],
+        "forbidden": ["overwriting_prompt_history", "other_project_prompts"],
+    },
+    "review": {
+        "read": ["workflow_status", "checkpoint", "proposed_changes"],
+        "write": ["review_notes", "validation_results"],
+        "forbidden": ["business_mutations"],
+    },
+}
+
+CHECKPOINT_EVENTS = (
+    "tool_start",
+    "tool_success",
+    "tool_failed",
+    "agent_handoff",
+    "waiting_user",
+    "task_completed",
+)
+
 
 def _crewai_installed() -> bool:
     return find_spec("crewai") is not None
@@ -129,6 +289,9 @@ def crew_status() -> dict[str, Any]:
         "fallback": "orchestrator" if not (requested and installed) else "",
         "roles": [role.__dict__ for role in CREW_ROLES],
         "tasks": [task.__dict__ for task in CREW_TASKS],
+        "tools": [tool.__dict__ for tool in CREW_TOOLS],
+        "memory_isolation": MEMORY_ISOLATION,
+        "checkpoint_events": list(CHECKPOINT_EVENTS),
     }
 
 
@@ -140,4 +303,15 @@ def crew_plan_metadata() -> dict[str, Any]:
         "fallback": status["fallback"],
         "roles": [role.name for role in CREW_ROLES],
         "task_agents": {task.stage: task.agent for task in CREW_TASKS},
+        "tool_registry": {
+            tool.key: {
+                "owner_agent": tool.owner_agent,
+                "scope": tool.scope,
+                "mutates_state": tool.mutates_state,
+                "requires_user_approval": tool.requires_user_approval,
+            }
+            for tool in CREW_TOOLS
+        },
+        "memory_isolation": MEMORY_ISOLATION,
+        "checkpoint_events": list(CHECKPOINT_EVENTS),
     }
