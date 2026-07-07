@@ -20,31 +20,83 @@ class PromptStrategy:
         return asdict(self)
 
 
-COMPLEX_ACTION_TERMS = {
+LARGE_ACTION_TERMS = {
     "chase",
     "fight",
     "run",
     "running",
     "escape",
     "crash",
+    "explosion",
+    "shoot",
+    "attack",
     "landing",
     "takeoff",
-    "turns",
-    "crosses",
-    "moves",
-    "enters",
-    "exits",
+    "fall",
+    "jump",
     "\u8ffd",
     "\u6253\u6597",
     "\u5954\u8dd1",
     "\u9003",
     "\u5760",
+    "\u7206\u70b8",
+    "\u5c04\u51fb",
+    "\u653b\u51fb",
     "\u964d\u843d",
     "\u8d77\u98de",
+    "\u6454\u5012",
+    "\u8df3",
+}
+
+ACTION_CHANGE_TERMS = {
+    "walk",
+    "walking",
+    "stand",
+    "stands",
+    "stands up",
+    "rise",
+    "rises",
+    "sit down",
+    "sits down",
+    "turns",
+    "crosses",
+    "moves",
+    "enters",
+    "exits",
+    "reaches",
+    "\u8d70",
+    "\u884c\u8d70",
+    "\u7ad9\u8d77",
+    "\u8d77\u8eab",
+    "\u5750\u4e0b",
     "\u8f6c\u8eab",
     "\u7a7f\u8fc7",
     "\u8d70\u8fdb",
     "\u79bb\u5f00",
+    "\u4f38\u624b",
+}
+
+SCENE_CHANGE_TERMS = {
+    "from ",
+    " to ",
+    "into",
+    "out of",
+    "through",
+    "between",
+    "corridor",
+    "door",
+    "outside",
+    "inside",
+    "\u4ece",
+    "\u5230",
+    "\u8fdb\u5165",
+    "\u79bb\u5f00",
+    "\u7a7f\u8fc7",
+    "\u95e8",
+    "\u8d70\u5eca",
+    "\u5ba4\u5185",
+    "\u5ba4\u5916",
+    "\u573a\u666f\u53d8\u5316",
 }
 
 COMPLEX_CAMERA_TERMS = {
@@ -72,6 +124,16 @@ MULTI_SUBJECT_TERMS = {
     "\u4e24\u4eba",
     "\u591a\u4eba",
     "\u4eba\u7fa4",
+}
+
+GROUP_SUBJECT_TERMS = {
+    "\u591a\u4eba",
+    "\u4eba\u7fa4",
+    "\u7fa4\u6f14",
+    "crowd",
+    "group",
+    "three",
+    "four",
 }
 
 ENCLOSED_SPACE_TERMS = {
@@ -106,36 +168,58 @@ def classify_shot_prompt_strategy(shot: Shot) -> PromptStrategy:
             shot.dialogue,
         )
     )
+    action_text = shot.action or ""
+    subject_text = shot.subject or ""
+    environment_text = shot.environment or ""
+    continuity_text = shot.continuity or ""
+    camera_text = shot.camera_motion or ""
+    has_action_change = _contains_any(action_text, ACTION_CHANGE_TERMS)
+    has_scene_change = _contains_any(
+        " ".join((action_text, environment_text, continuity_text)), SCENE_CHANGE_TERMS
+    )
+    has_large_action = _contains_any(action_text, LARGE_ACTION_TERMS)
+    has_moving_camera = _contains_any(camera_text, COMPLEX_CAMERA_TERMS)
+    has_multiple_subjects = _contains_any(subject_text, MULTI_SUBJECT_TERMS)
+    has_group_subjects = _contains_any(subject_text, GROUP_SUBJECT_TERMS)
+    has_dialogue = bool((shot.dialogue or "").strip())
+
     reasons: list[str] = []
-    score = 0
-
-    if duration > 6:
-        score += 3
-        reasons.append("long_duration")
-    elif duration > 3:
-        score += 1
-        reasons.append("medium_duration")
-
-    if _contains_any(shot.action or "", COMPLEX_ACTION_TERMS):
-        score += 2
-        reasons.append("complex_action")
-    if _contains_any(shot.camera_motion or "", COMPLEX_CAMERA_TERMS):
-        score += 1
+    if has_large_action:
+        reasons.append("large_action")
+    if has_scene_change:
+        reasons.append("scene_change")
+    if has_action_change:
+        reasons.append("action_state_change")
+    if has_moving_camera:
         reasons.append("moving_camera")
-    if _contains_any(shot.subject or "", MULTI_SUBJECT_TERMS):
-        score += 1
+    if has_group_subjects:
+        reasons.append("group_subjects")
+    elif has_multiple_subjects:
         reasons.append("multiple_subjects")
-    if (shot.dialogue or "").strip() and score <= 1:
-        reasons.append("simple_dialogue")
+    if has_dialogue:
+        reasons.append("dialogue")
 
-    complexity = "complex" if score >= 3 else "moderate" if score == 2 else "simple"
-    recommended_mode: PromptMode = "storyboard" if complexity == "complex" else "initial_frame"
+    requires_storyboard = has_scene_change or has_action_change or has_large_action
+    complex_blocking = has_group_subjects and (has_action_change or has_scene_change)
+    complex_two_person_change = has_multiple_subjects and has_action_change and has_scene_change
+    complex_action_scene = has_large_action or complex_blocking or (
+        has_moving_camera and (has_scene_change or has_large_action)
+    )
+    if complex_action_scene or complex_two_person_change:
+        complexity = "complex"
+    elif requires_storyboard:
+        complexity = "moderate"
+    else:
+        complexity = "simple"
+
+    recommended_mode: PromptMode = "storyboard" if requires_storyboard else "initial_frame"
     recommended_frame_count = (
         storyboard_frame_count_for_duration(duration) if recommended_mode == "storyboard" else None
     )
     needs_director_overhead = complexity == "complex" and (
-        "multiple_subjects" in reasons
-        or "moving_camera" in reasons
+        has_group_subjects
+        or has_large_action
+        or has_moving_camera
         or _contains_any(combined, ENCLOSED_SPACE_TERMS)
     )
     continuity_constraints = [
@@ -152,6 +236,6 @@ def classify_shot_prompt_strategy(shot: Shot) -> PromptStrategy:
         recommended_mode=recommended_mode,
         recommended_frame_count=recommended_frame_count,
         needs_director_overhead=needs_director_overhead,
-        reasons=reasons or ["static_single_action"],
+        reasons=reasons or ["static_dialogue_or_single_action"],
         continuity_constraints=continuity_constraints,
     )

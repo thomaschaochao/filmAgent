@@ -260,14 +260,14 @@ def test_prompt_strategy_recommends_storyboard_and_director_overhead_for_complex
     assert "prepare_director_overhead_blocking" in strategy.continuity_constraints
 
 
-def test_prompt_strategy_keeps_simple_dialogue_on_initial_frame():
+def test_prompt_strategy_keeps_simple_dialogue_initial_frame_even_when_long():
     shot = Shot(
         subject="A and B",
         action="sit facing each other",
         environment="quiet room",
         camera_motion="static",
         dialogue="A: We wait.\nB: We wait.",
-        duration_seconds=2.5,
+        duration_seconds=12.0,
     )
 
     strategy = classify_shot_prompt_strategy(shot)
@@ -276,6 +276,43 @@ def test_prompt_strategy_keeps_simple_dialogue_on_initial_frame():
     assert strategy.recommended_mode == "initial_frame"
     assert strategy.recommended_frame_count is None
     assert strategy.needs_director_overhead is False
+
+
+def test_prompt_strategy_uses_storyboard_for_dialogue_position_change_without_overhead():
+    shot = Shot(
+        subject="A and B",
+        action="A stands up during the conversation while B remains seated",
+        environment="same apartment room",
+        camera_motion="static",
+        dialogue="A: I have to go.\nB: Stay.",
+        duration_seconds=5.0,
+    )
+
+    strategy = classify_shot_prompt_strategy(shot)
+
+    assert strategy.complexity == "moderate"
+    assert strategy.recommended_mode == "storyboard"
+    assert strategy.recommended_frame_count == 6
+    assert strategy.needs_director_overhead is False
+    assert "action_state_change" in strategy.reasons
+
+
+def test_prompt_strategy_uses_overhead_for_group_blocking_changes():
+    shot = Shot(
+        subject="group of passengers and two guards",
+        action="the group moves from the gate through the corridor as guards cross behind them",
+        environment="airport gate to corridor",
+        camera_motion="tracking pan",
+        duration_seconds=5.5,
+    )
+
+    strategy = classify_shot_prompt_strategy(shot)
+
+    assert strategy.complexity == "complex"
+    assert strategy.recommended_mode == "storyboard"
+    assert strategy.needs_director_overhead is True
+    assert "group_subjects" in strategy.reasons
+    assert "scene_change" in strategy.reasons
 
 
 def test_matching_asset_is_added_as_at_reference():
