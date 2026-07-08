@@ -213,14 +213,15 @@ function getLatestAssistantMessage(messages = []) {
   }
 
 function renderAgentReplyOptions(message) {
-    const options = message?.metadata_json?.reply_options || [];
-    if (!options.length) return "";
-    return `<div class="agent-reply-options">${options.map((option, index) => `
-      <button class="agent-option-button" type="button" data-agent-option="${index}">
-        <strong>${esc(option.label)}</strong>
-        ${option.description ? `<span>${esc(option.description)}</span>` : ""}
-      </button>`).join("")}</div>`;
-  }
+  const options = message?.metadata_json?.reply_options || [];
+  if (!options.length) return "";
+  return `<div class="agent-reply-options">${options.map((option, index) => `
+    <button class="agent-option-button" type="button" data-agent-option="${index}">
+      <strong>${esc(option.label)}</strong>
+      ${option.description ? `<span>${esc(option.description)}</span>` : ""}
+      ${option.fact_chips?.length ? `<div class="agent-option-facts">${option.fact_chips.map(chip => `<em>${esc(chip.label)}：${esc(chip.value)}</em>`).join("")}</div>` : ""}
+    </button>`).join("")}</div>`;
+}
 
 async function sendAgentMessage(content, facts = {}) {
     if (!content || !state.agentSession) return;

@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 
 import app.main as main
+import app.services.orchestrator as orchestrator
 from app.services import crew as crew_service
 from app.services.crew_runner import CrewStageTool, run_stage_tools
 from app.services.crew_runtime import instantiate_crewai_runtime
@@ -103,6 +106,122 @@ def test_agent_plan_ready_message_offers_generate_plan_action(client):
     assert metadata["option_mode"] == "plan_ready"
     assert "generate_plan" in actions
     assert any(option.get("custom") for option in metadata["reply_options"])
+
+
+def test_agent_uses_valid_ai_generated_clarification_options(monkeypatch, client):
+    class FakeDeepSeekClient:
+        def chat_json(self, *_):
+            return {
+                "facts": {},
+                "reply": "请选择一套视觉、世界和镜头提示词方向。",
+                "reply_options": [
+                    {
+                        "label": "选项1：写实机场惊险片",
+                        "content": "使用写实机场惊险片方向。",
+                        "facts": {
+                            "name": "Return Flight",
+                            "visual_style": "电影感写实",
+                            "world_setting": "当代美国西海岸机场，暴雨夜",
+                            "aspect_ratio": "16:9",
+                            "prompt_mode": "initial_frame",
+                        },
+                        "description": "适合紧张、真实的飞行员返航故事。",
+                    },
+                    {
+                        "label": "选项2：近未来航空科幻",
+                        "content": "使用近未来航空科幻方向。",
+                        "facts": {
+                            "name": "Return Flight",
+                            "visual_style": "高概念科幻写实",
+                            "world_setting": "近未来亚洲超级机场，台风夜",
+                            "aspect_ratio": "2.39:1",
+                            "prompt_mode": "storyboard",
+                        },
+                        "description": "适合更强视觉设定和连续动作参考。",
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(orchestrator, "DeepSeekClient", FakeDeepSeekClient)
+    monkeypatch.setattr(
+        orchestrator,
+        "get_settings",
+        lambda: SimpleNamespace(master_agent_ai_enabled=True),
+    )
+
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Return Flight", "initial_input": "A pilot returns through rain."},
+    ).json()
+
+    options = session["messages"][-1]["metadata_json"]["reply_options"]
+    assert options[0]["source"] == "ai"
+    assert options[0]["label"] == "选项1：写实机场惊险片"
+    assert {chip["key"] for chip in options[0]["fact_chips"]} >= {
+        "visual_style",
+        "world_setting",
+        "aspect_ratio",
+        "prompt_mode",
+    }
+    assert options[-1]["custom"] is True
+
+
+def test_agent_rejects_invalid_ai_options_and_uses_combined_fallback(monkeypatch, client):
+    class FakeDeepSeekClient:
+        def chat_json(self, *_):
+            return {
+                "facts": {},
+                "reply": "请选择缺失设定。",
+                "reply_options": [
+                    {
+                        "label": "重复选项",
+                        "content": "只回答风格。",
+                        "facts": {"visual_style": "电影感写实"},
+                        "description": "缺少其它字段。",
+                    },
+                    {
+                        "label": "重复选项",
+                        "content": "只回答风格。",
+                        "facts": {"visual_style": "电影感写实"},
+                        "description": "重复且缺字段。",
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(orchestrator, "DeepSeekClient", FakeDeepSeekClient)
+    monkeypatch.setattr(
+        orchestrator,
+        "get_settings",
+        lambda: SimpleNamespace(master_agent_ai_enabled=True),
+    )
+
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Fallback Session", "initial_input": "A pilot returns through rain."},
+    ).json()
+
+    options = session["messages"][-1]["metadata_json"]["reply_options"]
+    assert options[0]["source"] == "fallback"
+    assert len(options[0]["facts"]) >= 4
+    assert options[0]["facts"]["name"] == "Fallback Session"
+    assert options[-1]["custom"] is True
+
+
+def test_agent_option_facts_can_be_confirmed_into_memory(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Memory Session", "initial_input": "A pilot returns through rain."},
+    ).json()
+    option = session["messages"][-1]["metadata_json"]["reply_options"][0]
+
+    response = client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={"content": option["content"], "facts": option["facts"]},
+    )
+
+    memories = {item["key"]: item["value"] for item in response.json()["memories"]}
+    for key, value in option["facts"].items():
+        assert memories[key] == value
 
 
 def test_agent_plan_approval_is_idempotent(client):

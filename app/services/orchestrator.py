@@ -35,33 +35,6 @@ REQUIRED_FACTS = {
     "prompt_mode": "镜头提示词模式（首帧或故事板）",
 }
 
-FACT_OPTION_PRESETS = {
-    "name": [
-        {"label": "使用当前会话标题", "facts": {"name": ""}},
-        {"label": "先用“未命名影片项目”", "facts": {"name": "未命名影片项目"}},
-    ],
-    "visual_style": [
-        {"label": "电影感写实", "facts": {"visual_style": "电影感写实"}},
-        {"label": "高概念科幻写实", "facts": {"visual_style": "高概念科幻写实"}},
-        {"label": "动画电影风格", "facts": {"visual_style": "动画电影风格"}},
-    ],
-    "world_setting": [
-        {"label": "当代美国城市", "facts": {"world_setting": "当代美国城市"}},
-        {"label": "近未来亚洲都市", "facts": {"world_setting": "近未来亚洲都市"}},
-        {"label": "架空世界，地点待细化", "facts": {"world_setting": "架空世界，地点待细化"}},
-    ],
-    "aspect_ratio": [
-        {"label": "16:9 横屏", "facts": {"aspect_ratio": "16:9"}},
-        {"label": "2.39:1 宽银幕", "facts": {"aspect_ratio": "2.39:1"}},
-        {"label": "9:16 竖屏", "facts": {"aspect_ratio": "9:16"}},
-    ],
-    "prompt_mode": [
-        {"label": "首帧模式", "facts": {"prompt_mode": "initial_frame"}},
-        {"label": "故事板模式", "facts": {"prompt_mode": "storyboard"}},
-        {"label": "由智能体按镜头复杂度决定", "facts": {"prompt_mode": "auto"}},
-    ],
-}
-
 FACT_CATEGORIES = {
     "name": "production",
     "visual_style": "visual",
@@ -89,55 +62,188 @@ class ConversationResult:
     missing: list[str]
 
 
-def _reply_options(
+@dataclass
+class ConversationExtraction:
+    facts: dict[str, str]
+    reply: str | None
+    reply_options: list[dict[str, object]]
+
+
+FALLBACK_OPTION_PROFILES = [
+    {
+        "name": "",
+        "visual_style": "电影感写实",
+        "world_setting": "当代美国机场与城市环境",
+        "aspect_ratio": "16:9",
+        "prompt_mode": "initial_frame",
+    },
+    {
+        "name": "",
+        "visual_style": "高概念科幻写实",
+        "world_setting": "近未来亚洲都市与高科技交通空间",
+        "aspect_ratio": "2.39:1",
+        "prompt_mode": "storyboard",
+    },
+    {
+        "name": "",
+        "visual_style": "动画电影风格",
+        "world_setting": "架空世界，地点与时代由智能体继续细化",
+        "aspect_ratio": "16:9",
+        "prompt_mode": "auto",
+    },
+]
+
+FACT_CHIP_LABELS = {
+    "name": "项目",
+    "visual_style": "风格",
+    "world_setting": "世界",
+    "aspect_ratio": "画幅",
+    "language": "语言",
+    "prompt_mode": "模式",
+}
+
+
+def _fact_chips(facts: dict[str, str]) -> list[dict[str, str]]:
+    return [
+        {"key": key, "label": FACT_CHIP_LABELS.get(key, key), "value": value}
+        for key, value in facts.items()
+        if value
+    ]
+
+
+def _custom_option(missing_keys: list[str]) -> dict[str, object]:
+    missing = "、".join(REQUIRED_FACTS[key] for key in missing_keys) or "补充信息"
+    return {
+        "label": "其它想法",
+        "custom": True,
+        "placeholder": f"请输入{missing}，也可以同时补充其它设定……",
+    }
+
+
+def _plan_ready_options() -> list[dict[str, object]]:
+    return [
+        {
+            "label": "生成完整制作计划",
+            "action": "generate_plan",
+            "description": "先生成可确认的阶段计划，不会立即创建项目。",
+        },
+        {
+            "label": "我还要补充设定",
+            "custom": True,
+            "placeholder": "继续补充风格、地点、角色关系或制作偏好……",
+        },
+    ]
+
+
+def _fallback_reply_options(
     session: AgentSession, missing_keys: list[str]
 ) -> list[dict[str, object]]:
     if not missing_keys:
-        return [
-            {
-                "label": "生成完整制作计划",
-                "action": "generate_plan",
-                "description": "先生成可确认的阶段计划，不会立即创建项目。",
-            },
-            {
-                "label": "我还要补充设定",
-                "custom": True,
-                "placeholder": "继续补充风格、地点、角色关系或制作偏好……",
-            },
-        ]
-    key = missing_keys[0]
-    presets = FACT_OPTION_PRESETS.get(key, [])
+        return _plan_ready_options()
     options: list[dict[str, object]] = []
-    for index, preset in enumerate(presets, start=1):
-        facts = dict(preset.get("facts", {}))
-        if key == "name" and facts.get("name") == "":
-            facts["name"] = session.title
-        label = str(preset.get("label", "选项"))
+    for index, profile in enumerate(FALLBACK_OPTION_PROFILES, start=1):
+        facts = {
+            key: (session.title if key == "name" and not profile.get(key) else profile.get(key, ""))
+            for key in missing_keys
+        }
+        facts = {key: value for key, value in facts.items() if value}
+        mode_label = {
+            "initial_frame": "首帧模式",
+            "storyboard": "故事板模式",
+            "auto": "按镜头复杂度自动决定",
+        }.get(facts.get("prompt_mode", ""), facts.get("prompt_mode"))
+        label_parts = [
+            facts.get("visual_style"),
+            facts.get("world_setting"),
+            facts.get("aspect_ratio"),
+            mode_label,
+        ]
+        label = " / ".join(part for part in label_parts if part) or f"方案{index}"
         options.append(
             {
                 "label": f"选项{index}：{label}",
-                "content": f"我选择{label}",
+                "content": "我选择这套设定：" + "；".join(
+                    f"{FACT_CHIP_LABELS.get(key, key)}：{value}" for key, value in facts.items()
+                ),
                 "facts": facts,
-                "description": preset.get("description", ""),
+                "description": "自动补齐当前缺失的关键制作信息，之后可继续细调。",
+                "fact_chips": _fact_chips(facts),
+                "source": "fallback",
             }
         )
-    options.append(
-        {
-            "label": "其它想法",
-            "custom": True,
-            "placeholder": f"请输入{REQUIRED_FACTS.get(key, '补充信息')}，也可以同时补充其它设定……",
-        }
-    )
+    options.append(_custom_option(missing_keys))
     return options
 
 
-def _message_metadata(missing_keys: list[str], session: AgentSession) -> dict[str, object]:
+def _validated_ai_reply_options(
+    raw_options: object, missing_keys: list[str]
+) -> list[dict[str, object]]:
+    if not missing_keys or not isinstance(raw_options, list):
+        return []
+    required = set(missing_keys)
+    seen: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+    options: list[dict[str, object]] = []
+    for raw in raw_options:
+        if not isinstance(raw, dict):
+            continue
+        facts = raw.get("facts")
+        if not isinstance(facts, dict):
+            continue
+        safe_facts = {
+            key: str(value).strip()
+            for key, value in facts.items()
+            if key in FACT_CATEGORIES and str(value).strip()
+        }
+        if not required.issubset(safe_facts):
+            continue
+        label = str(raw.get("label", "")).strip()
+        content = str(raw.get("content", "")).strip()
+        if not label or not content:
+            continue
+        fingerprint = (label.casefold(), tuple(sorted(safe_facts.items())))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        options.append(
+            {
+                "label": label,
+                "content": content,
+                "facts": safe_facts,
+                "description": str(raw.get("description", "")).strip(),
+                "fact_chips": _fact_chips(safe_facts),
+                "source": "ai",
+            }
+        )
+        if len(options) >= 3:
+            break
+    return options if len(options) >= 2 else []
+
+
+def _reply_options(
+    session: AgentSession,
+    missing_keys: list[str],
+    ai_reply_options: list[dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    if not missing_keys:
+        return _plan_ready_options()
+    options = _validated_ai_reply_options(ai_reply_options or [], missing_keys)
+    if not options:
+        options = _fallback_reply_options(session, missing_keys)[:-1]
+    options.append(_custom_option(missing_keys))
+    return options
+
+
+def _message_metadata(
+    missing_keys: list[str],
+    session: AgentSession,
+    ai_reply_options: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     missing = [REQUIRED_FACTS[key] for key in missing_keys]
     return {
         "missing_information": missing,
         "missing_keys": missing_keys,
         "option_mode": "clarify" if missing_keys else "plan_ready",
-        "reply_options": _reply_options(session, missing_keys),
+        "reply_options": _reply_options(session, missing_keys, ai_reply_options),
     }
 
 
@@ -191,9 +297,9 @@ def _infer_facts(content: str) -> dict[str, str]:
     return facts
 
 
-def _extract_with_ai(session: AgentSession, content: str) -> tuple[dict[str, str], str | None]:
+def _extract_with_ai(session: AgentSession, content: str) -> ConversationExtraction:
     if not get_settings().master_agent_ai_enabled:
-        return {}, None
+        return ConversationExtraction(facts={}, reply=None, reply_options=[])
     history = [
         {"role": message.role.value, "content": message.content}
         for message in session.messages[-12:]
@@ -203,14 +309,17 @@ def _extract_with_ai(session: AgentSession, content: str) -> tuple[dict[str, str
 Extract only information supported by the user's message. `facts` may contain name,
 visual_style, world_setting, aspect_ratio, language, prompt_mode, genre, tone, audience.
 Do not invent missing facts. `reply` should briefly acknowledge the request and ask about
-important missing production information. Never claim that work has been executed."""
+important missing production information. Also return `reply_options`: 2-3 distinct options
+that directly answer your clarification question. Every option must include label, content,
+facts, and description. If multiple production facts are missing, each option should fill all
+missing facts together. Never claim that work has been executed."""
     try:
         result = DeepSeekClient().chat_json(
             system,
             str({"confirmed_memory": memory, "recent_messages": history, "message": content}),
         )
     except (DeepSeekError, RuntimeError):
-        return {}, None
+        return ConversationExtraction(facts={}, reply=None, reply_options=[])
     facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
     safe_facts = {
         key: str(value).strip()
@@ -218,7 +327,12 @@ important missing production information. Never claim that work has been execute
         if key in FACT_CATEGORIES and str(value).strip()
     }
     reply = result.get("reply")
-    return safe_facts, str(reply).strip() if reply else None
+    reply_options = result.get("reply_options")
+    return ConversationExtraction(
+        facts=safe_facts,
+        reply=str(reply).strip() if reply else None,
+        reply_options=reply_options if isinstance(reply_options, list) else [],
+    )
 
 
 def continue_conversation(
@@ -227,8 +341,8 @@ def continue_conversation(
     db.add(AgentMessage(session_id=session.id, role=ChatMessageRole.user, content=content))
     if not session.original_input:
         session.original_input = content
-    ai_facts, ai_reply = _extract_with_ai(session, content)
-    inferred_facts = {**_infer_facts(content), **ai_facts}
+    extraction = _extract_with_ai(session, content)
+    inferred_facts = {**_infer_facts(content), **extraction.facts}
     for key, value in inferred_facts.items():
         if value.strip() and key not in explicit_facts:
             upsert_memory(
@@ -247,7 +361,7 @@ def continue_conversation(
     missing = [REQUIRED_FACTS[key] for key in missing_keys]
     if missing:
         session.status = AgentSessionStatus.clarifying
-        reply = ai_reply or "在生成制作计划前，还需要确认：" + "、".join(missing) + "。"
+        reply = extraction.reply or "在生成制作计划前，还需要确认：" + "、".join(missing) + "。"
     else:
         session.status = AgentSessionStatus.plan_ready
         reply = "关键信息已经齐全。我可以生成完整制作计划，确认后再分阶段执行。"
@@ -256,7 +370,7 @@ def continue_conversation(
             session_id=session.id,
             role=ChatMessageRole.assistant,
             content=reply,
-            metadata_json=_message_metadata(missing_keys, session),
+            metadata_json=_message_metadata(missing_keys, session, extraction.reply_options),
         )
     )
     db.commit()

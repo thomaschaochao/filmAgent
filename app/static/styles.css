@@ -101,6 +101,8 @@ button { color: inherit; }
 .agent-option-button:hover { border-color: var(--accent); background: rgba(215,166,91,.16); transform: translateY(-1px); }
 .agent-option-button strong { display: block; color: var(--accent); font-size: 12px; }
 .agent-option-button span { display: block; margin-top: 4px; color: #9ba0a8; font-size: 10px; line-height: 1.5; }
+.agent-option-facts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.agent-option-facts em { border: 1px solid #444952; border-radius: 999px; padding: 3px 7px; color: #c8cbd1; background: rgba(255,255,255,.04); font-style: normal; font-size: 9px; }
 .agent-thinking { display: flex; align-items: center; gap: 6px; color: #9ba0a8; }
 .agent-thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: thinking-dot 1s infinite ease-in-out; }
 .agent-thinking i:nth-of-type(2) { animation-delay: .15s; }

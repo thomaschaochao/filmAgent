@@ -9,8 +9,8 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmPilot" in response.text
-    assert "/static/app.js?v=20260708-agent-options-1" in response.text
-    assert "/static/styles.css?v=20260708-agent-options-1" in response.text
+    assert "/static/app.js?v=20260708-dynamic-options-1" in response.text
+    assert "/static/styles.css?v=20260708-dynamic-options-1" in response.text
     assert "data-close-dialog" in response.text
     assert "data-action=\"open-master-agent\"" in response.text
     assert "总控智能体对话" in response.text
