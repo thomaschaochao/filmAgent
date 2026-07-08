@@ -534,6 +534,7 @@ class CrewStatusRead(BaseModel):
     roles: list[CrewRoleRead]
     tasks: list[CrewTaskRead]
     tools: list[CrewToolRead]
+    tool_adapter: dict
     memory_isolation: dict
     checkpoint_events: list[str]
 

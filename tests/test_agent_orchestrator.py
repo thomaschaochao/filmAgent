@@ -1,5 +1,9 @@
+import pytest
+
 import app.main as main
 from app.services import crew as crew_service
+from app.services.crew_runner import CrewStageTool, run_stage_tools
+from app.services.crew_tools import build_tool_catalog
 from app.services.rag import LocalRAG
 
 
@@ -97,6 +101,9 @@ def test_crew_status_exposes_roles_without_secrets(client):
         "prompt_versions",
         "prompt_strategy_snapshot",
     ]
+    assert body["tool_adapter"]["catalog_ready"] is True
+    assert body["tool_adapter"]["all_writes_require_approval"] is True
+    assert "generate_shot_prompts" in body["tool_adapter"]["writable_tools"]
     assert "tool_start" in body["checkpoint_events"]
     assert "task_completed" in body["checkpoint_events"]
     assert "api_key" not in str(body).lower()
@@ -136,10 +143,21 @@ def test_workflow_plan_records_crew_runtime_metadata(client):
     assert runtime["task_agents"]["assets"] == "asset"
     assert runtime["tool_registry"]["retrieve_context"]["scope"] == "read:rag"
     assert runtime["tool_registry"]["create_project"]["requires_user_approval"] is True
+    assert runtime["tool_adapter"]["catalog_ready"] is True
     assert runtime["memory_isolation"]["research"]["write"] == [
         "research_sources_adopted_summary_only"
     ]
     assert "agent_handoff" in runtime["checkpoint_events"]
+
+
+def test_crew_tool_catalog_limits_write_tools_to_approved_internal_tools():
+    catalog = build_tool_catalog()
+
+    assert catalog["retrieve_context"].mutates_state is False
+    assert catalog["retrieve_context"].scope == "read:rag"
+    assert catalog["generate_shot_prompts"].mutates_state is True
+    assert catalog["generate_shot_prompts"].requires_user_approval is True
+    assert all(tool.exposed_to_crewai for tool in catalog.values())
 
 
 def _approved_agent_plan(client):
@@ -231,6 +249,15 @@ def test_workflow_stage_runner_records_successful_tool_events(monkeypatch, clien
         "tool_start",
         "tool_success",
     ]
+
+
+def test_stage_runner_rejects_unregistered_tools():
+    with pytest.raises(ValueError, match="Unregistered CrewAI tool"):
+        run_stage_tools(
+            None,
+            None,
+            [CrewStageTool("unsafe_shell", lambda: None)],
+        )
 
 
 def test_workflow_task_quota_failure_is_not_retryable(monkeypatch, client):

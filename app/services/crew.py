@@ -277,6 +277,12 @@ def _crewai_installed() -> bool:
     return find_spec("crewai") is not None
 
 
+def _tool_adapter_status() -> dict[str, Any]:
+    from app.services.crew_tools import crew_tool_adapter_status
+
+    return crew_tool_adapter_status()
+
+
 def crew_status() -> dict[str, Any]:
     settings = get_settings()
     installed = _crewai_installed()
@@ -290,6 +296,7 @@ def crew_status() -> dict[str, Any]:
         "roles": [role.__dict__ for role in CREW_ROLES],
         "tasks": [task.__dict__ for task in CREW_TASKS],
         "tools": [tool.__dict__ for tool in CREW_TOOLS],
+        "tool_adapter": _tool_adapter_status(),
         "memory_isolation": MEMORY_ISOLATION,
         "checkpoint_events": list(CHECKPOINT_EVENTS),
     }
@@ -312,6 +319,7 @@ def crew_plan_metadata() -> dict[str, Any]:
             }
             for tool in CREW_TOOLS
         },
+        "tool_adapter": _tool_adapter_status(),
         "memory_isolation": MEMORY_ISOLATION,
         "checkpoint_events": list(CHECKPOINT_EVENTS),
     }

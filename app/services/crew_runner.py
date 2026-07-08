@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import WorkflowTask
 from app.services.checkpoint import append_tool_event
+from app.services.crew_tools import require_registered_tool
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ def run_stage_tools(
 ) -> dict[str, Any]:
     results: dict[str, Any] = {}
     for tool in tools:
+        require_registered_tool(tool.name)
         append_tool_event(
             task,
             event="tool_start",
