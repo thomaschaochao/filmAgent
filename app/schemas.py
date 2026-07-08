@@ -536,6 +536,7 @@ class CrewStatusRead(BaseModel):
     tools: list[CrewToolRead]
     tool_adapter: dict
     tool_descriptors: list[dict]
+    runtime_factory: dict
     memory_isolation: dict
     checkpoint_events: list[str]
 

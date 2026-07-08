@@ -3,6 +3,7 @@ import pytest
 import app.main as main
 from app.services import crew as crew_service
 from app.services.crew_runner import CrewStageTool, run_stage_tools
+from app.services.crew_runtime import instantiate_crewai_runtime
 from app.services.crew_tools import build_crewai_tool_descriptors, build_tool_catalog
 from app.services.rag import LocalRAG
 
@@ -108,6 +109,8 @@ def test_crew_status_exposes_roles_without_secrets(client):
     descriptors = {descriptor["name"]: descriptor for descriptor in body["tool_descriptors"]}
     assert descriptors["retrieve_context"]["args_schema"]["required"] == ["query"]
     assert descriptors["generate_shot_prompts"]["metadata"]["requires_user_approval"] is True
+    assert body["runtime_factory"]["factory_ready"] is True
+    assert body["runtime_factory"]["agent_count"] >= 6
     assert "tool_start" in body["checkpoint_events"]
     assert "task_completed" in body["checkpoint_events"]
     assert "api_key" not in str(body).lower()
@@ -153,6 +156,7 @@ def test_workflow_plan_records_crew_runtime_metadata(client):
         descriptor["name"] == "generate_storyboard"
         for descriptor in runtime["tool_descriptors"]
     )
+    assert runtime["runtime_factory"]["factory_ready"] is True
     assert runtime["memory_isolation"]["research"]["write"] == [
         "research_sources_adopted_summary_only"
     ]
@@ -181,6 +185,42 @@ def test_crew_tool_descriptors_are_strict_and_do_not_expose_secrets():
     assert descriptors["create_project"]["metadata"]["mutates_state"] is True
     assert descriptors["create_project"]["metadata"]["requires_user_approval"] is True
     assert "api_key" not in str(descriptors).lower()
+
+
+def test_crewai_runtime_instantiates_agents_tasks_and_crew():
+    calls = {"agents": [], "tasks": [], "crews": []}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            calls["agents"].append(kwargs)
+
+    class FakeTask:
+        def __init__(self, **kwargs):
+            calls["tasks"].append(kwargs)
+
+    class FakeCrew:
+        def __init__(self, **kwargs):
+            calls["crews"].append(kwargs)
+
+    class FakeProcess:
+        sequential = "sequential"
+
+    class FakeCrewAIModule:
+        Agent = FakeAgent
+        Task = FakeTask
+        Crew = FakeCrew
+        Process = FakeProcess
+
+    result = instantiate_crewai_runtime(FakeCrewAIModule)
+
+    assert result.crew is not None
+    assert result.status["instantiated"] is True
+    assert len(calls["agents"]) >= 6
+    assert len(calls["tasks"]) >= 6
+    assert len(calls["crews"]) == 1
+    assert calls["crews"][0]["process"] == "sequential"
+    assert "registered internal tools" in calls["tasks"][0]["expected_output"]
+    assert "api_key" not in str(result.status).lower()
 
 
 def _approved_agent_plan(client):
