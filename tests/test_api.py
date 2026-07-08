@@ -44,6 +44,8 @@ def test_frontend_entrypoint(client):
     assert "运行监控与 Agent 评估" in app_response.text
     assert "agent-run-dialog" in response.text
     assert "openAgentRunDetail" in app_response.text
+    assert 'data-action="crew-preflight"' in app_response.text
+    assert "runCrewPreflight" in app_response.text
 
 
 def test_project_and_script_workflow(client):

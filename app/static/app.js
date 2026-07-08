@@ -8,7 +8,7 @@ const state = {
   metrics: null, returnStep: "project",
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
   chatThreads: [], chatThread: null, chatTarget: null,
-  agentSessions: [], agentSession: null, retrievalStatus: null, crewStatus: null, showMasterAgent: false,
+  agentSessions: [], agentSession: null, retrievalStatus: null, crewStatus: null, crewPreflight: null, showMasterAgent: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -232,9 +232,12 @@ function renderMasterAgent() {
       </section>`);
   }
   if (agentContextColumn && crew) {
+    const preflight = state.crewPreflight;
     agentContextColumn.insertAdjacentHTML("beforeend", `
       <section class="panel agent-context-card"><span class="eyebrow">AGENT RUNTIME</span><h3>CrewAI Status</h3>
         ${crewRows.map(([key, value]) => `<div class="memory-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}
+        ${preflight ? `<div class="missing-box"><strong>${preflight.can_exercise_workflow ? "Ready to verify" : "Needs attention"}</strong><p>${esc(preflight.message)}</p></div>` : ""}
+        <button class="button full" data-action="crew-preflight">Run preflight</button>
       </section>`);
   }
   if (agentContextColumn && activeTask) {
@@ -327,6 +330,12 @@ async function refreshAgentSession() {
 async function generateAgentPlan() {
   const plan = await request(`/agent/sessions/${state.agentSession.id}/plan`, { method: "POST", body: "{}" });
   await refreshAgentSession(); renderMasterAgent(); toast(`计划 V${plan.version} 已生成`);
+}
+
+async function runCrewPreflight() {
+  state.crewPreflight = await request("/agent/crew/preflight", { method: "POST" });
+  renderMasterAgent();
+  toast(state.crewPreflight.can_exercise_workflow ? "CrewAI preflight ready" : "CrewAI preflight needs attention");
 }
 
 async function approveAgentPlan(planId) {
@@ -732,6 +741,7 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "open-master-agent") { state.showMasterAgent = true; render(); }
     else if (actionButton?.dataset.action === "close-master-agent") { state.showMasterAgent = false; render(); }
     else if (actionButton?.dataset.action === "generate-agent-plan") await generateAgentPlan();
+    else if (actionButton?.dataset.action === "crew-preflight") await runCrewPreflight();
     else if (event.target.closest("[data-agent-resume-task]")) await resumeAgentTask(event.target.closest("[data-agent-resume-task]").dataset.agentResumeTask);
     else if (event.target.closest("[data-agent-cancel-task]")) await cancelAgentTask(event.target.closest("[data-agent-cancel-task]").dataset.agentCancelTask);
     else if (actionButton?.dataset.action === "edit-project") openProjectDialog(state.project);

@@ -5,7 +5,7 @@ from importlib import import_module
 from typing import Any
 
 from app.services.crew import CREW_ROLES, CREW_TASKS, MEMORY_ISOLATION
-from app.services.crew_tools import build_crewai_tool_descriptors
+from app.services.crew_tools import build_crewai_tool_descriptors, crew_tool_adapter_status
 
 
 @dataclass(frozen=True)
@@ -91,6 +91,36 @@ def instantiate_crewai_runtime(crewai_module: Any | None = None) -> CrewRuntimeB
             "error": "",
         },
     )
+
+
+def crew_runtime_preflight() -> dict[str, Any]:
+    build = instantiate_crewai_runtime()
+    adapter = crew_tool_adapter_status()
+    status = build.status
+    can_exercise_workflow = bool(
+        adapter["catalog_ready"]
+        and adapter["descriptors_ready"]
+        and (status.get("instantiated") or status.get("fallback") == "orchestrator")
+    )
+    return {
+        "framework": "crewai",
+        "factory_ready": status["factory_ready"],
+        "catalog_ready": adapter["catalog_ready"],
+        "descriptors_ready": adapter["descriptors_ready"],
+        "installed": bool(status.get("installed")),
+        "instantiated": bool(status.get("instantiated")),
+        "fallback": status.get("fallback", ""),
+        "agent_count": status["agent_count"],
+        "task_count": status["task_count"],
+        "tool_descriptor_count": status["tool_descriptor_count"],
+        "can_exercise_workflow": can_exercise_workflow,
+        "message": (
+            "CrewAI runtime instantiated; workflow can exercise CrewAI runtime boundaries."
+            if status.get("instantiated")
+            else "CrewAI is not active; workflow can be exercised through orchestrator fallback."
+        ),
+        "error": status.get("error", ""),
+    }
 
 
 def _agent_backstory(agent_key: str, tools: tuple[str, ...]) -> str:

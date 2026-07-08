@@ -64,6 +64,7 @@ from app.schemas import (
     ChatThreadCreate,
     ChatThreadDetail,
     ChatThreadRead,
+    CrewRuntimePreflightRead,
     CrewStatusRead,
     ImageProviderRead,
     PageFetchRequest,
@@ -112,6 +113,7 @@ from app.services.checkpoint import (
 )
 from app.services.crew import crew_status
 from app.services.crew_runner import CrewStageTool, run_stage_tools
+from app.services.crew_runtime import crew_runtime_preflight
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
@@ -1937,6 +1939,11 @@ def list_agent_sessions(db: DbSession) -> list[AgentSession]:
 @app.get(f"{API}/agent/crew/status", response_model=CrewStatusRead)
 def get_agent_crew_status() -> dict:
     return crew_status()
+
+
+@app.post(f"{API}/agent/crew/preflight", response_model=CrewRuntimePreflightRead)
+def preflight_agent_crew_runtime() -> dict:
+    return crew_runtime_preflight()
 
 
 @app.get(f"{API}/agent/sessions/{{session_id}}", response_model=AgentSessionRead)

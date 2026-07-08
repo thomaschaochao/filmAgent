@@ -125,6 +125,21 @@ def test_crew_status_can_report_active_runtime(monkeypatch, client):
     assert body["fallback"] == ""
 
 
+def test_crew_runtime_preflight_allows_fallback_workflow_exercise(client):
+    response = client.post("/api/v1/agent/crew/preflight")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["framework"] == "crewai"
+    assert body["factory_ready"] is True
+    assert body["catalog_ready"] is True
+    assert body["descriptors_ready"] is True
+    assert body["can_exercise_workflow"] is True
+    assert body["agent_count"] >= 6
+    assert body["task_count"] >= 6
+    assert body["tool_descriptor_count"] >= 6
+    assert "api_key" not in str(body).lower()
+
+
 def test_workflow_plan_records_crew_runtime_metadata(client):
     session = client.post(
         "/api/v1/agent/sessions",

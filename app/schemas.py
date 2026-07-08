@@ -541,6 +541,22 @@ class CrewStatusRead(BaseModel):
     checkpoint_events: list[str]
 
 
+class CrewRuntimePreflightRead(BaseModel):
+    framework: str
+    factory_ready: bool
+    catalog_ready: bool
+    descriptors_ready: bool
+    installed: bool
+    instantiated: bool
+    fallback: str
+    agent_count: int
+    task_count: int
+    tool_descriptor_count: int
+    can_exercise_workflow: bool
+    message: str
+    error: str
+
+
 class WorkflowPlanCreate(BaseModel):
     project_spec: dict = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)
