@@ -22,6 +22,29 @@ const formatPromptPreview = (value = "") => String(value)
   .trim();
 const statusLabels = { DRAFT_SCRIPT: "项目草稿", SCRIPT_REVIEW: "剧本待确认", SCRIPT_APPROVED: "剧本已确认", ASSET_REVIEW: "资产整理中", SHOT_LIST_REVIEW: "分镜设计中", PROMPT_REVIEW: "提示词制作中", COMPLETED: "制作完成" };
 const assetTypeLabels = { character: "人物", location: "场景", prop: "道具" };
+const agentStageLabels = {
+  project_script: "创建项目与剧本",
+  assets: "提取资产与提示词",
+  shots: "拆分分镜",
+  prompts: "生成镜头提示词",
+  images: "图片批次建议",
+};
+const agentTaskStatusLabels = {
+  pending: "未开始",
+  awaiting_approval: "等待确认",
+  running: "执行中",
+  completed: "已完成",
+  failed: "执行失败",
+  cancelled: "已取消",
+};
+const agentSessionStatusLabels = {
+  clarifying: "澄清需求中",
+  plan_ready: "可生成计划",
+  awaiting_approval: "等待确认",
+  awaiting_stage_approval: "等待阶段确认",
+  completed: "已完成",
+  cancelled: "已取消",
+};
 const automaticFrameCount = duration => duration <= 3 ? 4 : duration <= 6 ? 6 : 9;
 
 async function request(path, options = {}) {
@@ -204,7 +227,8 @@ function renderMasterAgent() {
     ["Tasks", `${crew.tasks?.length || 0}`],
   ] : [];
   const plan = session?.plans?.at(-1);
-  const activeTask = plan?.tasks?.find(task => ["awaiting_approval", "failed", "running", "cancelled"].includes(task.status));
+  const activeTask = plan?.tasks?.find(task => ["failed", "running", "awaiting_approval"].includes(task.status));
+  const showCheckpoint = activeTask && ["failed", "running", "cancelled"].includes(activeTask.status);
   const memories = session?.memories || [];
   const missing = session?.messages?.at(-1)?.metadata_json?.missing_information || [];
   const messages = session?.messages || [];
@@ -213,13 +237,13 @@ function renderMasterAgent() {
       <div class="section-head"><div><span class="eyebrow">MASTER PRODUCTION AGENT</span><h2>从一句话开始完成整部影片的前期工作</h2><p>先澄清创作设定、生成计划，再由你逐阶段确认执行。</p></div><div class="actions">${state.project ? `<button class="button" data-action="close-master-agent">返回项目</button>` : ""}<button class="button" data-action="new-agent-session">新会话</button></div></div>
       <div class="agent-home-grid">
         <section class="panel master-agent-panel">
-          <header><div><span class="eyebrow">${session ? esc(session.status) : "READY"}</span><h3>${esc(session?.title || "总控智能体")}</h3></div><span class="rag-badge ${status?.available ? "ready" : "fallback"}">${status?.available ? "BGE-M3 · QDRANT" : "关键词检索模式"}</span></header>
+          <header><div><span class="eyebrow">${session ? esc(agentSessionStatusLabels[session.status] || session.status) : "READY"}</span><h3>${esc(session?.title || "总控智能体")}</h3></div><span class="rag-badge ${status?.available ? "ready" : "fallback"}">${status?.available ? "BGE-M3 · QDRANT" : "关键词检索模式"}</span></header>
           <div class="master-agent-messages">${messages.length ? messages.map(message => `<div class="master-message ${message.role}"><small>${message.role === "user" ? "你" : "智能体"}</small>${esc(message.content)}</div>`).join("") : `<div class="agent-welcome"><strong>描述你的故事，或粘贴完整剧本</strong><p>我会识别视觉风格、时间地点、画幅和提示词模式；不确定的信息会先询问，不会直接创建项目。</p></div>`}</div>
           ${session ? `<form id="master-agent-form" class="master-agent-form"><textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本……"></textarea><details class="agent-facts"><summary>快速补充项目设定（可选）</summary><div><input name="name" placeholder="项目名称"><input name="visual_style" placeholder="视觉风格"><input name="world_setting" placeholder="时代与地点"><select name="aspect_ratio"><option value="">画幅</option><option>16:9</option><option>2.39:1</option><option>4:3</option><option>9:16</option></select><select name="prompt_mode"><option value="">提示词模式</option><option value="initial_frame">首帧</option><option value="storyboard">故事板</option></select></div></details><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
         </section>
         <aside class="agent-context-column">
           <section class="panel agent-context-card"><span class="eyebrow">CREATIVE MEMORY</span><h3>已确认创作信息</h3>${memories.length ? memories.map(item => `<div class="memory-row"><span>${esc(item.key)}</span><strong>${esc(item.value)}</strong></div>`).join("") : `<p>对话后会在这里形成可追溯的项目记忆。</p>`}${missing.length ? `<div class="missing-box"><strong>仍需确认</strong><p>${missing.map(esc).join("、")}</p></div>` : ""}</section>
-          <section class="panel agent-context-card"><span class="eyebrow">WORKFLOW PLAN</span><h3>制作计划</h3>${plan ? `<div class="agent-stage-list">${plan.tasks.map(task => `<div class="agent-stage ${task.status}"><span>${String(task.sequence).padStart(2,"0")}</span><div><strong>${esc(task.stage)}</strong><small>${esc(task.status)}</small></div></div>`).join("")}</div>${!session.project_id ? `<button class="button primary full" data-agent-approve-plan="${plan.id}">确认计划并创建项目</button>` : activeTask ? `<button class="button primary full" data-agent-stage="${activeTask.stage}" data-agent-plan="${plan.id}">${activeTask.status === "failed" ? "重试" : "确认执行"} · ${esc(activeTask.stage)}</button>` : ""}` : session && session.status === "plan_ready" ? `<button class="button primary full" data-action="generate-agent-plan">生成完整制作计划</button>` : `<p>关键信息齐全后才会生成计划。</p>`}</section>
+          <section class="panel agent-context-card"><span class="eyebrow">WORKFLOW PLAN</span><h3>制作计划</h3>${plan ? `<div class="agent-stage-list">${plan.tasks.map(task => `<div class="agent-stage ${task.status}"><span>${String(task.sequence).padStart(2,"0")}</span><div><strong>${esc(agentStageLabels[task.stage] || task.stage)}</strong><small>${esc(agentTaskStatusLabels[task.status] || task.status)}</small></div></div>`).join("")}</div>${!session.project_id ? `<button class="button primary full" data-agent-approve-plan="${plan.id}">确认计划并创建项目</button>` : activeTask ? `<button class="button primary full" data-agent-stage="${activeTask.stage}" data-agent-plan="${plan.id}" ${activeTask.status === "running" ? "disabled" : ""}>${activeTask.status === "failed" ? "重试" : "确认执行"} · ${esc(agentStageLabels[activeTask.stage] || activeTask.stage)}</button>` : ""}` : session && session.status === "plan_ready" ? `<button class="button primary full" data-action="generate-agent-plan">生成完整制作计划</button>` : `<p>关键信息齐全后才会生成计划。</p>`}</section>
         </aside>
       </div>
     </div>`;
@@ -237,10 +261,10 @@ function renderMasterAgent() {
       <section class="panel agent-context-card"><span class="eyebrow">AGENT RUNTIME</span><h3>CrewAI Status</h3>
         ${crewRows.map(([key, value]) => `<div class="memory-row"><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}
         ${preflight ? `<div class="missing-box"><strong>${preflight.can_exercise_workflow ? "Ready to verify" : "Needs attention"}</strong><p>${esc(preflight.message)}</p></div>` : ""}
-        <button class="button full" data-action="crew-preflight">Run preflight</button>
+        <button class="button full" data-action="crew-preflight">运行预检</button>
       </section>`);
   }
-  if (agentContextColumn && activeTask) {
+  if (agentContextColumn && showCheckpoint) {
     const checkpoint = activeTask.result_data?.checkpoint || {};
     const recovery = activeTask.result_data?.recovery || {};
     const resumeDisabled = activeTask.status === "completed" || activeTask.status === "cancelled" || recovery.retryable === false;

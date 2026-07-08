@@ -9,7 +9,7 @@ def test_frontend_entrypoint(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "FilmPilot" in response.text
-    assert "/static/app.js?v=20260705-1" in response.text
+    assert "/static/app.js?v=20260708-agent-ux-1" in response.text
     assert "/static/styles.css?v=20260705-1" in response.text
     assert "data-close-dialog" in response.text
 
