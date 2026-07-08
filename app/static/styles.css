@@ -27,6 +27,9 @@ button { color: inherit; }
 .new-project-button { width: 100%; border: 1px solid #464a50; background: #191b1f; padding: 12px 14px; border-radius: 5px; text-align: left; cursor: pointer; transition: .2s; }
 .new-project-button:hover { border-color: var(--accent); background: var(--accent-soft); }
 .new-project-button span { color: var(--accent); font-size: 18px; margin-right: 8px; }
+.master-agent-entry { width: 100%; margin-top: 9px; border: 1px solid rgba(215,166,91,.55); background: linear-gradient(135deg, rgba(215,166,91,.18), rgba(255,255,255,.03)); color: var(--paper); padding: 12px 14px; border-radius: 5px; text-align: left; cursor: pointer; transition: .2s; }
+.master-agent-entry:hover { border-color: var(--accent); background: var(--accent-soft); }
+.master-agent-entry span { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 8px; border-radius: 50%; background: var(--accent); color: #111; font: 700 10px "DM Mono", monospace; }
 .sidebar-heading { display: flex; justify-content: space-between; margin: 28px 8px 10px; color: #777b82; font-size: 11px; letter-spacing: .1em; }
 .project-list { overflow-y: auto; display: grid; gap: 5px; }
 .project-item { border: 0; border-left: 2px solid transparent; background: transparent; border-radius: 2px; padding: 11px 10px; text-align: left; cursor: pointer; }
@@ -42,7 +45,7 @@ button { color: inherit; }
 .topbar { height: 104px; padding: 25px 42px; border-bottom: 1px solid #292c31; display: flex; align-items: center; justify-content: space-between; }
 .project-title-wrap h1 { font-family: "Noto Serif SC", serif; font-size: 23px; margin: 5px 0 0; }
 .topbar-meta { display: flex; gap: 9px; }
-.topbar-actions { display: flex; align-items: center; gap: 14px; }.monitor-button { border: 1px solid #4b5159; border-radius: 4px; padding: 9px 13px; background: #171a1f; color: var(--paper); cursor: pointer; font-size: 11px; }.monitor-button:hover { border-color: var(--accent); color: white; }.monitor-button:disabled { opacity: .35; cursor: not-allowed; }
+.topbar-actions { display: flex; align-items: center; gap: 14px; }.master-agent-top-button,.monitor-button { border: 1px solid #4b5159; border-radius: 4px; padding: 9px 13px; background: #171a1f; color: var(--paper); cursor: pointer; font-size: 11px; }.master-agent-top-button { border-color: rgba(215,166,91,.65); color: var(--accent); }.master-agent-top-button:hover,.monitor-button:hover { border-color: var(--accent); color: white; }.monitor-button:disabled { opacity: .35; cursor: not-allowed; }
 .meta-chip { border: 1px solid #34373d; color: #aaaeb5; border-radius: 99px; padding: 6px 10px; font: 11px "DM Mono", monospace; }
 .workflow { height: 96px; padding: 0 42px; border-bottom: 1px solid #292c31; display: flex; align-items: center; }
 .workflow-step { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border: 0; background: transparent; opacity: .42; text-align: left; cursor: pointer; }
