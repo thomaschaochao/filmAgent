@@ -3,7 +3,7 @@ import pytest
 import app.main as main
 from app.services import crew as crew_service
 from app.services.crew_runner import CrewStageTool, run_stage_tools
-from app.services.crew_tools import build_tool_catalog
+from app.services.crew_tools import build_crewai_tool_descriptors, build_tool_catalog
 from app.services.rag import LocalRAG
 
 
@@ -102,8 +102,12 @@ def test_crew_status_exposes_roles_without_secrets(client):
         "prompt_strategy_snapshot",
     ]
     assert body["tool_adapter"]["catalog_ready"] is True
+    assert body["tool_adapter"]["descriptors_ready"] is True
     assert body["tool_adapter"]["all_writes_require_approval"] is True
     assert "generate_shot_prompts" in body["tool_adapter"]["writable_tools"]
+    descriptors = {descriptor["name"]: descriptor for descriptor in body["tool_descriptors"]}
+    assert descriptors["retrieve_context"]["args_schema"]["required"] == ["query"]
+    assert descriptors["generate_shot_prompts"]["metadata"]["requires_user_approval"] is True
     assert "tool_start" in body["checkpoint_events"]
     assert "task_completed" in body["checkpoint_events"]
     assert "api_key" not in str(body).lower()
@@ -144,6 +148,11 @@ def test_workflow_plan_records_crew_runtime_metadata(client):
     assert runtime["tool_registry"]["retrieve_context"]["scope"] == "read:rag"
     assert runtime["tool_registry"]["create_project"]["requires_user_approval"] is True
     assert runtime["tool_adapter"]["catalog_ready"] is True
+    assert runtime["tool_adapter"]["descriptors_ready"] is True
+    assert any(
+        descriptor["name"] == "generate_storyboard"
+        for descriptor in runtime["tool_descriptors"]
+    )
     assert runtime["memory_isolation"]["research"]["write"] == [
         "research_sources_adopted_summary_only"
     ]
@@ -158,6 +167,20 @@ def test_crew_tool_catalog_limits_write_tools_to_approved_internal_tools():
     assert catalog["generate_shot_prompts"].mutates_state is True
     assert catalog["generate_shot_prompts"].requires_user_approval is True
     assert all(tool.exposed_to_crewai for tool in catalog.values())
+
+
+def test_crew_tool_descriptors_are_strict_and_do_not_expose_secrets():
+    descriptors = {
+        descriptor.name: descriptor.model_dump()
+        for descriptor in build_crewai_tool_descriptors()
+    }
+
+    assert set(descriptors) == set(build_tool_catalog())
+    assert descriptors["generate_storyboard"]["args_schema"]["required"] == ["script_id"]
+    assert descriptors["generate_storyboard"]["args_schema"]["additionalProperties"] is False
+    assert descriptors["create_project"]["metadata"]["mutates_state"] is True
+    assert descriptors["create_project"]["metadata"]["requires_user_approval"] is True
+    assert "api_key" not in str(descriptors).lower()
 
 
 def _approved_agent_plan(client):

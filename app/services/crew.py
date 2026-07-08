@@ -283,6 +283,12 @@ def _tool_adapter_status() -> dict[str, Any]:
     return crew_tool_adapter_status()
 
 
+def _tool_descriptors() -> list[dict[str, Any]]:
+    from app.services.crew_tools import build_crewai_tool_descriptors
+
+    return [descriptor.model_dump() for descriptor in build_crewai_tool_descriptors()]
+
+
 def crew_status() -> dict[str, Any]:
     settings = get_settings()
     installed = _crewai_installed()
@@ -297,6 +303,7 @@ def crew_status() -> dict[str, Any]:
         "tasks": [task.__dict__ for task in CREW_TASKS],
         "tools": [tool.__dict__ for tool in CREW_TOOLS],
         "tool_adapter": _tool_adapter_status(),
+        "tool_descriptors": _tool_descriptors(),
         "memory_isolation": MEMORY_ISOLATION,
         "checkpoint_events": list(CHECKPOINT_EVENTS),
     }
@@ -320,6 +327,7 @@ def crew_plan_metadata() -> dict[str, Any]:
             for tool in CREW_TOOLS
         },
         "tool_adapter": _tool_adapter_status(),
+        "tool_descriptors": _tool_descriptors(),
         "memory_isolation": MEMORY_ISOLATION,
         "checkpoint_events": list(CHECKPOINT_EVENTS),
     }
