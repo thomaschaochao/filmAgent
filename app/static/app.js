@@ -340,7 +340,10 @@ async function runCrewPreflight() {
 
 async function approveAgentPlan(planId) {
   loading(true, "正在创建项目与剧本", "完成后将建立本地语义索引");
-  state.agentSession = await request(`/agent/plans/${planId}/approve`, { method: "POST" });
+  await request("/agent/crew/tools/create_project/execute", {
+    method: "POST", body: JSON.stringify({ plan_id: planId }),
+  });
+  await refreshAgentSession();
   state.projects = await request("/projects");
   state.project = state.projects.find(item => item.id === state.agentSession.project_id) || null;
   if (state.project) await selectProject(state.project.id);
@@ -348,8 +351,19 @@ async function approveAgentPlan(planId) {
 }
 
 async function approveAgentStage(planId, stage) {
+  const stageTool = {
+    assets: "extract_assets",
+    shots: "generate_storyboard",
+    prompts: "generate_shot_prompts",
+  }[stage];
   loading(true, `正在执行 ${stage}`, "该阶段可能调用外部模型，请稍候");
-  await request(`/agent/plans/${planId}/stages/${stage}/approve`, { method: "POST" });
+  if (stageTool) {
+    await request(`/agent/crew/tools/${stageTool}/execute`, {
+      method: "POST", body: JSON.stringify({ plan_id: planId }),
+    });
+  } else {
+    await request(`/agent/plans/${planId}/stages/${stage}/approve`, { method: "POST" });
+  }
   await refreshAgentSession();
   if (state.agentSession.project_id) await selectProject(state.agentSession.project_id);
   state.showMasterAgent = true; loading(false); render(); toast(`${stage} 阶段已完成`);

@@ -87,6 +87,50 @@ def test_agent_plan_approval_is_idempotent(client):
     assert len(client.get("/api/v1/projects").json()) == 1
 
 
+def test_crew_tool_execute_api_can_create_project_after_plan_approval(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "crew-execute", "initial_input": "A pilot returns through rain."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Crew Execute",
+                "visual_style": "cinematic realism",
+                "world_setting": "modern Seattle airport in heavy rain",
+                "aspect_ratio": "16:9",
+                "prompt_mode": "initial_frame",
+            },
+        },
+    )
+    plan = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={}).json()
+
+    response = client.post(
+        "/api/v1/agent/crew/tools/create_project/execute",
+        json={"plan_id": plan["id"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool"] == "create_project"
+    assert body["result"]["project_id"]
+    refreshed = client.get(f"/api/v1/agent/sessions/{session['id']}").json()
+    assert refreshed["project_id"] == body["result"]["project_id"]
+
+
+def test_crew_tool_execute_api_rejects_write_without_plan_id(client):
+    response = client.post(
+        "/api/v1/agent/crew/tools/generate_shot_prompts/execute",
+        json={"project_id": "project-1"},
+    )
+
+    assert response.status_code == 409
+    assert "plan_id" in response.json()["detail"]
+    assert "api_key" not in str(response.json()).lower()
+
+
 def test_crew_status_exposes_roles_without_secrets(client):
     response = client.get("/api/v1/agent/crew/status")
     assert response.status_code == 200
@@ -275,9 +319,10 @@ def test_crewai_write_tools_delegate_to_stage_approval(monkeypatch):
 
     calls = {}
 
-    def fake_approve_stage(plan_id, stage):
+    def fake_approve_stage(plan_id, stage, *, db=None):
         calls["plan_id"] = plan_id
         calls["stage"] = stage
+        calls["db"] = db
         return {"task_id": "task-1", "stage": stage, "status": "completed"}
 
     monkeypatch.setattr(executor, "_approve_stage", fake_approve_stage)
@@ -285,7 +330,7 @@ def test_crewai_write_tools_delegate_to_stage_approval(monkeypatch):
     result = execute_crewai_tool("generate_shot_prompts", plan_id="plan-1")
 
     assert result == {"task_id": "task-1", "stage": "prompts", "status": "completed"}
-    assert calls == {"plan_id": "plan-1", "stage": "prompts"}
+    assert calls == {"plan_id": "plan-1", "stage": "prompts", "db": None}
 
 
 def test_crewai_retrieve_context_tool_uses_registered_retrieval(monkeypatch):

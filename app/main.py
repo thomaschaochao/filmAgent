@@ -6,7 +6,7 @@ import unicodedata
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
@@ -115,6 +115,7 @@ from app.services.checkpoint import (
 from app.services.crew import crew_status
 from app.services.crew_runner import CrewStageTool, run_stage_tools
 from app.services.crew_runtime import crew_runtime_preflight
+from app.services.crew_tool_executor import CrewToolExecutionError, execute_crewai_tool
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
@@ -1945,6 +1946,15 @@ def get_agent_crew_status() -> dict:
 @app.post(f"{API}/agent/crew/preflight", response_model=CrewRuntimePreflightRead)
 def preflight_agent_crew_runtime() -> dict:
     return crew_runtime_preflight()
+
+
+@app.post(f"{API}/agent/crew/tools/{{tool_name}}/execute")
+def execute_agent_crew_tool(tool_name: str, payload: dict[str, Any], db: DbSession) -> dict:
+    try:
+        result = execute_crewai_tool(tool_name, db=db, **payload)
+    except CrewToolExecutionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"tool": tool_name, "result": result}
 
 
 @app.get(f"{API}/agent/sessions/{{session_id}}", response_model=AgentSessionRead)
