@@ -9,6 +9,7 @@ const state = {
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
   chatThreads: [], chatThread: null, chatTarget: null,
   agentSessions: [], agentSession: null, retrievalStatus: null, crewStatus: null, crewPreflight: null, showMasterAgent: false,
+  archivedAgentSessions: [], showArchivedAgentSessions: false, expandedAgentMessages: new Set(),
   agentThinking: false,
 };
 
@@ -212,6 +213,27 @@ function getLatestAssistantMessage(messages = []) {
     return [...messages].reverse().find(message => message.role === "assistant");
   }
 
+function shouldCollapseAgentMessage(message) {
+  return message.role === "user" && (message.content.length > 600 || message.content.split(/\r?\n/).length > 8);
+}
+
+function agentMessagePreview(content) {
+  const lines = content.split(/\r?\n/);
+  const previewLines = lines.slice(0, 4).join("\n");
+  return previewLines.length > 300 ? `${previewLines.slice(0, 300)}…` : previewLines;
+}
+
+function renderAgentMessage(message) {
+  const collapsible = shouldCollapseAgentMessage(message);
+  const expanded = state.expandedAgentMessages.has(message.id);
+  const content = collapsible && !expanded ? agentMessagePreview(message.content) : message.content;
+  return `<div class="master-message ${message.role} ${collapsible && !expanded ? "collapsed" : ""}">
+    <small>${message.role === "user" ? "你" : "智能体"}</small>
+    <div class="master-message-content">${esc(content)}</div>
+    ${collapsible ? `<button class="message-toggle" type="button" data-toggle-agent-message="${message.id}">${expanded ? "收起" : "展开全文"}</button>` : ""}
+  </div>`;
+}
+
 function renderAgentReplyOptions(message) {
   const options = message?.metadata_json?.reply_options || [];
   if (!options.length) return "";
@@ -231,6 +253,7 @@ async function sendAgentMessage(content, facts = {}) {
       state.agentSession = await request(`/agent/sessions/${state.agentSession.id}/messages`, {
         method: "POST", body: JSON.stringify({ content, facts }),
       });
+      await refreshAgentSessionLists();
     } finally {
       state.agentThinking = false;
       renderMasterAgent();
@@ -255,6 +278,24 @@ async function handleAgentOption(button) {
     }
     await sendAgentMessage(option.content || option.label, option.facts || {});
   }
+
+function renderAgentSessionHistory() {
+  const sessions = state.showArchivedAgentSessions ? state.archivedAgentSessions : state.agentSessions;
+  return `<section class="panel agent-context-card agent-session-history">
+    <div class="agent-history-head"><div><span class="eyebrow">CONVERSATIONS</span><h3>${state.showArchivedAgentSessions ? "已归档对话" : "对话历史"}</h3></div><button class="button" data-action="toggle-agent-archive-view">${state.showArchivedAgentSessions ? "查看当前" : "查看归档"}</button></div>
+    ${sessions.length ? `<div class="agent-session-list">${sessions.map(item => `
+      <article class="agent-session-item ${state.agentSession?.id === item.id ? "active" : ""}">
+        <button type="button" data-agent-session-id="${item.id}">
+          <strong>${esc(item.title)}</strong>
+          <small>${esc(agentSessionStatusLabels[item.status] || item.status)} · ${item.messages?.length || 0} 条 · ${new Date(item.updated_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})}</small>
+        </button>
+        <div class="agent-session-actions">
+          ${state.showArchivedAgentSessions ? `<button class="button" data-agent-unarchive-session="${item.id}">恢复</button>` : `<button class="button" data-agent-archive-session="${item.id}">归档</button>`}
+          <button class="button danger" data-agent-delete-session="${item.id}">删除</button>
+        </div>
+      </article>`).join("")}</div>` : `<p>${state.showArchivedAgentSessions ? "暂无归档对话。" : "暂无历史对话。"}</p>`}
+  </section>`;
+}
 
 function renderMasterAgent() {
   const session = state.agentSession;
@@ -289,10 +330,11 @@ function renderMasterAgent() {
       <div class="agent-home-grid">
         <section class="panel master-agent-panel">
           <header><div><span class="eyebrow">${session ? esc(agentSessionStatusLabels[session.status] || session.status) : "READY"}</span><h3>${esc(session?.title || "总控智能体")}</h3></div><span class="rag-badge ${status?.available ? "ready" : "fallback"}">${status?.available ? "BGE-M3 · QDRANT" : "关键词检索模式"}</span></header>
-          <div class="master-agent-messages">${messages.length ? messages.map(message => `<div class="master-message ${message.role}"><small>${message.role === "user" ? "你" : "智能体"}</small>${esc(message.content)}</div>`).join("") : `<div class="agent-welcome"><strong>描述你的故事，或粘贴完整剧本</strong><p>我会识别视觉风格、时间地点、画幅和提示词模式；不确定的信息会先询问，不会直接创建项目。</p></div>`}</div>
+          <div class="master-agent-messages">${messages.length ? messages.map(renderAgentMessage).join("") : `<div class="agent-welcome"><strong>描述你的故事，或粘贴完整剧本</strong><p>我会识别视觉风格、时间地点、画幅和提示词模式；不确定的信息会先询问，不会直接创建项目。</p></div>`}</div>
           ${session ? `<form id="master-agent-form" class="master-agent-form"><textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本……"></textarea><details class="agent-facts"><summary>快速补充项目设定（可选）</summary><div><input name="name" placeholder="项目名称"><input name="visual_style" placeholder="视觉风格"><input name="world_setting" placeholder="时代与地点"><select name="aspect_ratio"><option value="">画幅</option><option>16:9</option><option>2.39:1</option><option>4:3</option><option>9:16</option></select><select name="prompt_mode"><option value="">提示词模式</option><option value="initial_frame">首帧</option><option value="storyboard">故事板</option></select></div></details><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
         </section>
         <aside class="agent-context-column">
+          ${renderAgentSessionHistory()}
           <section class="panel agent-context-card"><span class="eyebrow">CREATIVE MEMORY</span><h3>已确认创作信息</h3>${memories.length ? memories.map(item => `<div class="memory-row"><span>${esc(item.key)}</span><strong>${esc(item.value)}</strong></div>`).join("") : `<p>对话后会在这里形成可追溯的项目记忆。</p>`}${missing.length ? `<div class="missing-box"><strong>仍需确认</strong><p>${missing.map(esc).join("、")}</p></div>` : ""}</section>
           <section class="panel agent-context-card"><span class="eyebrow">WORKFLOW PLAN</span><h3>制作计划</h3>${plan ? `<div class="agent-stage-list">${plan.tasks.map(task => `<div class="agent-stage ${task.status}"><span>${String(task.sequence).padStart(2,"0")}</span><div><strong>${esc(agentStageLabels[task.stage] || task.stage)}</strong><small>${esc(agentTaskStatusLabels[task.status] || task.status)}</small></div></div>`).join("")}</div>${!session.project_id ? `<button class="button primary full" data-agent-approve-plan="${plan.id}">确认计划并创建项目</button>` : activeTask ? `<button class="button primary full" data-agent-stage="${activeTask.stage}" data-agent-plan="${plan.id}" ${activeTask.status === "running" ? "disabled" : ""}>${activeTask.status === "failed" ? "重试" : "确认执行"} · ${esc(agentStageLabels[activeTask.stage] || activeTask.stage)}</button>` : ""}` : session && session.status === "plan_ready" ? `<button class="button primary full" data-action="generate-agent-plan">生成完整制作计划</button>` : `<p>关键信息齐全后才会生成计划。</p>`}</section>
         </aside>
@@ -317,7 +359,7 @@ function renderMasterAgent() {
   }
   const agentContextColumn = $(".agent-context-column");
   if (agentContextColumn && plan && !session.project_id) {
-    const planCard = $$(".agent-context-card", agentContextColumn)[1];
+    const planCard = $$(".agent-context-card", agentContextColumn)[2];
     planCard?.insertAdjacentHTML("beforeend", `
       <div class="agent-plan-decision">
         <strong>计划已生成，是否立即执行？</strong>
@@ -406,8 +448,8 @@ function renderPrompts() {
 }
 
 async function loadProjects(selectId = null) {
-  [state.projects, state.agentSessions, state.retrievalStatus, state.crewStatus] = await Promise.all([
-    request("/projects"), request("/agent/sessions"), request("/agent/retrieval/status"), request("/agent/crew/status"),
+  [state.projects, state.agentSessions, state.archivedAgentSessions, state.retrievalStatus, state.crewStatus] = await Promise.all([
+    request("/projects"), request("/agent/sessions"), request("/agent/sessions?archived=true"), request("/agent/retrieval/status"), request("/agent/crew/status"),
   ]);
   state.agentSession = state.agentSessions[0] || null;
   if (selectId) await selectProject(selectId);
@@ -415,17 +457,61 @@ async function loadProjects(selectId = null) {
   else render();
 }
 
+async function refreshAgentSessionLists() {
+  [state.agentSessions, state.archivedAgentSessions] = await Promise.all([
+    request("/agent/sessions"),
+    request("/agent/sessions?archived=true"),
+  ]);
+}
+
 async function createAgentSession() {
   const session = await request("/agent/sessions", {
     method: "POST", body: JSON.stringify({ title: "新的影片计划" }),
   });
-  state.agentSessions.unshift(session); state.agentSession = session; state.showMasterAgent = true; render();
+  await refreshAgentSessionLists();
+  state.agentSession = session; state.showMasterAgent = true; state.showArchivedAgentSessions = false; render();
+}
+
+async function selectAgentSession(sessionId) {
+  state.agentSession = await request(`/agent/sessions/${sessionId}`);
+  state.showMasterAgent = true;
+  render();
 }
 
 async function refreshAgentSession() {
   if (!state.agentSession) return;
   state.agentSession = await request(`/agent/sessions/${state.agentSession.id}`);
-  state.agentSessions = state.agentSessions.map(item => item.id === state.agentSession.id ? state.agentSession : item);
+  await refreshAgentSessionLists();
+}
+
+async function archiveAgentSession(sessionId) {
+  await request(`/agent/sessions/${sessionId}/archive`, { method: "POST" });
+  await refreshAgentSessionLists();
+  if (state.agentSession?.id === sessionId) state.agentSession = state.agentSessions[0] || null;
+  state.showArchivedAgentSessions = false;
+  render();
+  toast("对话已归档");
+}
+
+async function unarchiveAgentSession(sessionId) {
+  const session = await request(`/agent/sessions/${sessionId}/unarchive`, { method: "POST" });
+  await refreshAgentSessionLists();
+  state.agentSession = session;
+  state.showArchivedAgentSessions = false;
+  state.showMasterAgent = true;
+  render();
+  toast("对话已恢复");
+}
+
+async function deleteAgentSession(sessionId) {
+  if (!window.confirm("确定永久删除这个 Agent 对话吗？该操作不会删除已创建的项目。")) return;
+  await request(`/agent/sessions/${sessionId}`, { method: "DELETE" });
+  state.expandedAgentMessages.clear();
+  await refreshAgentSessionLists();
+  if (state.agentSession?.id === sessionId) state.agentSession = state.agentSessions[0] || null;
+  if (state.showArchivedAgentSessions && !state.archivedAgentSessions.length) state.showArchivedAgentSessions = false;
+  render();
+  toast("对话已删除");
 }
 
 async function generateAgentPlan() {
@@ -812,8 +898,23 @@ document.addEventListener("click", async event => {
   const deleteShotButton = event.target.closest("[data-delete-shot]");
   const shotCard = chatTargetButton ? null : event.target.closest("[data-shot-id]");
   const agentRun = event.target.closest("[data-agent-run]");
+  const agentSessionButton = event.target.closest("[data-agent-session-id]");
+  const archiveAgentButton = event.target.closest("[data-agent-archive-session]");
+  const unarchiveAgentButton = event.target.closest("[data-agent-unarchive-session]");
+  const deleteAgentButton = event.target.closest("[data-agent-delete-session]");
+  const toggleAgentMessageButton = event.target.closest("[data-toggle-agent-message]");
   try {
     if (agentOptionButton) await handleAgentOption(agentOptionButton);
+    else if (agentSessionButton) await selectAgentSession(agentSessionButton.dataset.agentSessionId);
+    else if (archiveAgentButton) await archiveAgentSession(archiveAgentButton.dataset.agentArchiveSession);
+    else if (unarchiveAgentButton) await unarchiveAgentSession(unarchiveAgentButton.dataset.agentUnarchiveSession);
+    else if (deleteAgentButton) await deleteAgentSession(deleteAgentButton.dataset.agentDeleteSession);
+    else if (toggleAgentMessageButton) {
+      const id = toggleAgentMessageButton.dataset.toggleAgentMessage;
+      if (state.expandedAgentMessages.has(id)) state.expandedAgentMessages.delete(id);
+      else state.expandedAgentMessages.add(id);
+      renderMasterAgent();
+    }
     else if (approveMasterPlan) await approveAgentPlan(approveMasterPlan.dataset.agentApprovePlan);
     else if (approveMasterStage) await approveAgentStage(approveMasterStage.dataset.agentPlan, approveMasterStage.dataset.agentStage);
     else if (agentRun) await openAgentRunDetail(agentRun.dataset.agentRun);
@@ -859,6 +960,7 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "close-master-agent") { state.showMasterAgent = false; render(); }
     else if (actionButton?.dataset.action === "generate-agent-plan") await generateAgentPlan();
     else if (actionButton?.dataset.action === "defer-agent-plan") toast("计划已保留，可稍后从这里继续执行");
+    else if (actionButton?.dataset.action === "toggle-agent-archive-view") { state.showArchivedAgentSessions = !state.showArchivedAgentSessions; renderMasterAgent(); }
     else if (actionButton?.dataset.action === "crew-preflight") await runCrewPreflight();
     else if (event.target.closest("[data-agent-resume-task]")) await resumeAgentTask(event.target.closest("[data-agent-resume-task]").dataset.agentResumeTask);
     else if (event.target.closest("[data-agent-cancel-task]")) await cancelAgentTask(event.target.closest("[data-agent-cancel-task]").dataset.agentCancelTask);

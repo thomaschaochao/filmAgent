@@ -402,6 +402,7 @@ class AgentSession(Base):
     current_stage: Mapped[str] = mapped_column(String(64), default="discovery")
     original_input: Mapped[str] = mapped_column(Text, default="")
     context_summary: Mapped[str] = mapped_column(Text, default="")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

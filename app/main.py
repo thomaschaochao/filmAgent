@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, inspect, select, text
@@ -153,6 +153,12 @@ async def lifespan(_: FastAPI):
             connection.execute(
                 text("ALTER TABLE shots ADD COLUMN duration_seconds FLOAT NOT NULL DEFAULT 4.0")
             )
+    agent_session_columns = {
+        column["name"] for column in inspect(engine).get_columns("agent_sessions")
+    }
+    if "archived_at" not in agent_session_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE agent_sessions ADD COLUMN archived_at DATETIME"))
     agent_run_columns = {column["name"] for column in inspect(engine).get_columns("agent_runs")}
     agent_run_migrations = {
         "error_type": "VARCHAR(64)",
@@ -1931,10 +1937,19 @@ def create_agent_session(payload: AgentSessionCreate, db: DbSession) -> AgentSes
 
 
 @app.get(f"{API}/agent/sessions", response_model=list[AgentSessionRead])
-def list_agent_sessions(db: DbSession) -> list[AgentSession]:
-    ids = list(
-        db.scalars(select(AgentSession.id).order_by(AgentSession.updated_at.desc()).limit(30)).all()
-    )
+def list_agent_sessions(
+    db: DbSession,
+    archived: bool = Query(False),
+    include_archived: bool = Query(False),
+) -> list[AgentSession]:
+    statement = select(AgentSession.id)
+    if not include_archived:
+        statement = statement.where(
+            AgentSession.archived_at.is_not(None)
+            if archived
+            else AgentSession.archived_at.is_(None)
+        )
+    ids = list(db.scalars(statement.order_by(AgentSession.updated_at.desc()).limit(30)).all())
     return [_require_agent_session(db, session_id) for session_id in ids]
 
 
@@ -1960,6 +1975,30 @@ def execute_agent_crew_tool(tool_name: str, payload: dict[str, Any], db: DbSessi
 @app.get(f"{API}/agent/sessions/{{session_id}}", response_model=AgentSessionRead)
 def get_agent_session(session_id: str, db: DbSession) -> AgentSession:
     return _require_agent_session(db, session_id)
+
+
+@app.post(f"{API}/agent/sessions/{{session_id}}/archive", response_model=AgentSessionRead)
+def archive_agent_session(session_id: str, db: DbSession) -> AgentSession:
+    session = _require_agent_session(db, session_id)
+    session.archived_at = datetime.now(UTC)
+    db.commit()
+    return _require_agent_session(db, session.id)
+
+
+@app.post(f"{API}/agent/sessions/{{session_id}}/unarchive", response_model=AgentSessionRead)
+def unarchive_agent_session(session_id: str, db: DbSession) -> AgentSession:
+    session = _require_agent_session(db, session_id)
+    session.archived_at = None
+    db.commit()
+    return _require_agent_session(db, session.id)
+
+
+@app.delete(f"{API}/agent/sessions/{{session_id}}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent_session(session_id: str, db: DbSession) -> Response:
+    session = _require_agent_session(db, session_id)
+    db.delete(session)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post(f"{API}/agent/sessions/{{session_id}}/messages", response_model=AgentSessionRead)

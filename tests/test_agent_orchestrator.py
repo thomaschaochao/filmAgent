@@ -224,6 +224,67 @@ def test_agent_option_facts_can_be_confirmed_into_memory(client):
         assert memories[key] == value
 
 
+def test_agent_session_archive_filters_and_unarchive(client):
+    first = client.post("/api/v1/agent/sessions", json={"title": "Active chat"}).json()
+    second = client.post("/api/v1/agent/sessions", json={"title": "Archive me"}).json()
+
+    archived = client.post(f"/api/v1/agent/sessions/{second['id']}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+
+    active_ids = {item["id"] for item in client.get("/api/v1/agent/sessions").json()}
+    archived_ids = {
+        item["id"] for item in client.get("/api/v1/agent/sessions?archived=true").json()
+    }
+    all_ids = {
+        item["id"] for item in client.get("/api/v1/agent/sessions?include_archived=true").json()
+    }
+    assert first["id"] in active_ids
+    assert second["id"] not in active_ids
+    assert second["id"] in archived_ids
+    assert {first["id"], second["id"]}.issubset(all_ids)
+
+    restored = client.post(f"/api/v1/agent/sessions/{second['id']}/unarchive")
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    active_ids = {item["id"] for item in client.get("/api/v1/agent/sessions").json()}
+    assert second["id"] in active_ids
+
+
+def test_delete_agent_session_cascades_agent_data_but_keeps_project(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Delete session", "initial_input": "A pilot studies the runway."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Kept Project",
+                "visual_style": "cinematic realism",
+                "world_setting": "modern airport",
+                "aspect_ratio": "16:9",
+                "prompt_mode": "initial_frame",
+            },
+        },
+    )
+    plan = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={}).json()
+    approved = client.post(f"/api/v1/agent/plans/{plan['id']}/approve").json()
+
+    deleted = client.delete(f"/api/v1/agent/sessions/{session['id']}")
+
+    assert deleted.status_code == 204
+    assert client.get(f"/api/v1/agent/sessions/{session['id']}").status_code == 404
+    project_ids = {item["id"] for item in client.get("/api/v1/projects").json()}
+    assert approved["project_id"] in project_ids
+
+
+def test_delete_missing_agent_session_returns_404(client):
+    response = client.delete("/api/v1/agent/sessions/not-found")
+    assert response.status_code == 404
+
+
 def test_agent_plan_approval_is_idempotent(client):
     session = client.post(
         "/api/v1/agent/sessions",

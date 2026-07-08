@@ -494,6 +494,7 @@ class AgentSessionRead(ORMModel):
     current_stage: str
     original_input: str
     context_summary: str
+    archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
     messages: list[AgentMessageRead] = Field(default_factory=list)
