@@ -200,7 +200,7 @@ def test_crew_tool_descriptors_are_strict_and_do_not_expose_secrets():
     }
 
     assert set(descriptors) == set(build_tool_catalog())
-    assert descriptors["generate_storyboard"]["args_schema"]["required"] == ["script_id"]
+    assert descriptors["generate_storyboard"]["args_schema"]["required"] == ["plan_id"]
     assert descriptors["generate_storyboard"]["args_schema"]["additionalProperties"] is False
     assert descriptors["create_project"]["metadata"]["mutates_state"] is True
     assert descriptors["create_project"]["metadata"]["requires_user_approval"] is True
@@ -255,17 +255,37 @@ def test_crewai_runtime_instantiates_agents_tasks_and_crew():
     )
     assert "query" in tool_schema["properties"]
     assert tool_schema["additionalProperties"] is False
-    with pytest.raises(CrewToolExecutionError, match="stage approval API"):
+    with pytest.raises(CrewToolExecutionError, match="requires an approved workflow plan_id"):
         create_project_tool = next(tool for tool in producer_tools if tool.name == "create_project")
-        create_project_tool._run(plan_id="plan-1")
+        create_project_tool._run()
     assert "api_key" not in str(result.status).lower()
 
 
-def test_crewai_write_tools_are_gated_through_stage_approval():
-    with pytest.raises(CrewToolExecutionError, match="stage approval API") as exc:
+def test_crewai_write_tools_require_approved_plan_id():
+    with pytest.raises(
+        CrewToolExecutionError, match="requires an approved workflow plan_id"
+    ) as exc:
         execute_crewai_tool("generate_shot_prompts", project_id="project-1")
 
     assert "api_key" not in str(exc.value).lower()
+
+
+def test_crewai_write_tools_delegate_to_stage_approval(monkeypatch):
+    import app.services.crew_tool_executor as executor
+
+    calls = {}
+
+    def fake_approve_stage(plan_id, stage):
+        calls["plan_id"] = plan_id
+        calls["stage"] = stage
+        return {"task_id": "task-1", "stage": stage, "status": "completed"}
+
+    monkeypatch.setattr(executor, "_approve_stage", fake_approve_stage)
+
+    result = execute_crewai_tool("generate_shot_prompts", plan_id="plan-1")
+
+    assert result == {"task_id": "task-1", "stage": "prompts", "status": "completed"}
+    assert calls == {"plan_id": "plan-1", "stage": "prompts"}
 
 
 def test_crewai_retrieve_context_tool_uses_registered_retrieval(monkeypatch):

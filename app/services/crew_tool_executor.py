@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 
 from app.database import SessionLocal
@@ -43,10 +44,57 @@ def _execute_read_tool(tool_name: str, kwargs: dict[str, Any]) -> Any:
 
 
 def _execute_write_tool(tool_name: str, kwargs: dict[str, Any]) -> Any:
-    raise CrewToolExecutionError(
-        f"CrewAI tool `{tool_name}` is write-scoped and must be executed through "
-        "the stage approval API so checkpoint, idempotency, and user approval are preserved."
-    )
+    plan_id = _optional_string(kwargs.get("plan_id"))
+    if not plan_id:
+        raise CrewToolExecutionError(
+            f"CrewAI tool `{tool_name}` is write-scoped and requires an approved workflow plan_id."
+        )
+    if tool_name == "create_project":
+        return _approve_plan(plan_id)
+    stage = _stage_for_write_tool(tool_name)
+    if stage is None:
+        raise CrewToolExecutionError(f"Unsupported write-scoped CrewAI tool: {tool_name}")
+    return _approve_stage(plan_id, stage)
+
+
+def _stage_for_write_tool(tool_name: str) -> str | None:
+    return {
+        "save_script": "project_script",
+        "approve_script": "assets",
+        "extract_assets": "assets",
+        "generate_asset_prompts": "assets",
+        "generate_storyboard": "shots",
+        "generate_shot_prompts": "prompts",
+    }.get(tool_name)
+
+
+def _approve_plan(plan_id: str) -> dict[str, Any]:
+    from app.main import approve_agent_plan
+
+    with SessionLocal() as db:
+        session = approve_agent_plan(plan_id, BackgroundTasks(), db)
+        return {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "status": (
+                session.status.value if hasattr(session.status, "value") else str(session.status)
+            ),
+            "current_stage": session.current_stage,
+        }
+
+
+def _approve_stage(plan_id: str, stage: str) -> dict[str, Any]:
+    from app.main import approve_agent_stage
+
+    with SessionLocal() as db:
+        task = approve_agent_stage(plan_id, stage, db)
+        return {
+            "task_id": task.id,
+            "plan_id": task.plan_id,
+            "stage": task.stage,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "result": task.result_data or {},
+        }
 
 
 def _retrieve_context(kwargs: dict[str, Any]) -> list[dict]:
