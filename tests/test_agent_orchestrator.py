@@ -4,6 +4,7 @@ import app.main as main
 from app.services import crew as crew_service
 from app.services.crew_runner import CrewStageTool, run_stage_tools
 from app.services.crew_runtime import instantiate_crewai_runtime
+from app.services.crew_tool_executor import CrewToolExecutionError, execute_crewai_tool
 from app.services.crew_tools import build_crewai_tool_descriptors, build_tool_catalog
 from app.services.rag import LocalRAG
 
@@ -254,9 +255,51 @@ def test_crewai_runtime_instantiates_agents_tasks_and_crew():
     )
     assert "query" in tool_schema["properties"]
     assert tool_schema["additionalProperties"] is False
-    with pytest.raises(RuntimeError, match="not bound to an internal callable"):
-        producer_tools[0]._run(query="runway lights")
+    with pytest.raises(CrewToolExecutionError, match="stage approval API"):
+        create_project_tool = next(tool for tool in producer_tools if tool.name == "create_project")
+        create_project_tool._run(plan_id="plan-1")
     assert "api_key" not in str(result.status).lower()
+
+
+def test_crewai_write_tools_are_gated_through_stage_approval():
+    with pytest.raises(CrewToolExecutionError, match="stage approval API") as exc:
+        execute_crewai_tool("generate_shot_prompts", project_id="project-1")
+
+    assert "api_key" not in str(exc.value).lower()
+
+
+def test_crewai_retrieve_context_tool_uses_registered_retrieval(monkeypatch):
+    import app.services.crew_tool_executor as executor
+
+    calls = {}
+
+    class FakeSession:
+        def __enter__(self):
+            return "db"
+
+        def __exit__(self, *args):
+            return None
+
+    def fake_retrieve(payload, db):
+        calls["payload"] = payload
+        calls["db"] = db
+        return [{"chunk_id": "chunk-1", "content": "runway lights"}]
+
+    monkeypatch.setattr(executor, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(executor, "retrieve_context", fake_retrieve)
+
+    result = execute_crewai_tool(
+        "retrieve_context",
+        query="runway lights",
+        project_id="project-1",
+        limit=3,
+    )
+
+    assert result == [{"chunk_id": "chunk-1", "content": "runway lights"}]
+    assert calls["payload"].query == "runway lights"
+    assert calls["payload"].project_id == "project-1"
+    assert calls["payload"].limit == 3
+    assert calls["db"] == "db"
 
 
 def _approved_agent_plan(client):

@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ConfigDict, create_model
 
 from app.services.crew import CREW_ROLES, CREW_TASKS, MEMORY_ISOLATION
+from app.services.crew_tool_executor import execute_crewai_tool
 from app.services.crew_tools import build_crewai_tool_descriptors, crew_tool_adapter_status
 
 
@@ -26,10 +27,7 @@ class CrewRuntimeToolHandle:
     metadata: dict[str, Any]
 
     def run(self, **kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError(
-            f"CrewAI tool `{self.name}` is registered but not bound to an "
-            "internal callable in this runtime yet."
-        )
+        return execute_crewai_tool(self.name, **kwargs)
 
 
 def crew_runtime_factory_status() -> dict[str, Any]:
@@ -186,10 +184,7 @@ def _build_crewai_base_tool(descriptor: Any, base_tool_cls: type[Any]) -> Any:
 
     class RegisteredCrewTool(base_tool_cls):
         def _run(self, **kwargs: Any) -> dict[str, Any]:
-            raise RuntimeError(
-                f"CrewAI tool `{descriptor.name}` is registered but not bound to an "
-                "internal callable in this runtime yet."
-            )
+            return execute_crewai_tool(descriptor.name, **kwargs)
 
     RegisteredCrewTool.__name__ = f"{descriptor.name.title().replace('_', '')}Tool"
     return RegisteredCrewTool(

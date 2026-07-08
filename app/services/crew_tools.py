@@ -37,7 +37,9 @@ TOOL_ARGUMENT_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "query": {"type": "string"},
             "project_id": {"type": "string"},
+            "script_id": {"type": "string"},
             "content_type": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
         },
         "required": ["query"],
         "additionalProperties": False,

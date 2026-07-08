@@ -3,8 +3,9 @@
 import asyncio
 
 from app.database import SessionLocal
-from app.main import get_retrieval_status, retrieve_agent_context
 from app.schemas import RetrievalQuery
+from app.services.agent_retrieval import get_retrieval_status_snapshot
+from app.services.agent_retrieval import retrieve_context as retrieve_agent_context
 from app.services.web_tools import fetch_page, search_web
 
 
@@ -20,7 +21,7 @@ def build_server():
     def retrieval_status() -> dict:
         """Return local RAG availability without exposing paths or secrets."""
         with SessionLocal() as db:
-            return get_retrieval_status(db)
+            return get_retrieval_status_snapshot(db)
 
     @server.tool()
     def retrieve_context(query: str, project_id: str | None = None, limit: int = 8) -> list[dict]:
