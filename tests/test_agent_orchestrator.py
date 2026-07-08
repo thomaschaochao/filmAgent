@@ -194,10 +194,43 @@ def test_workflow_task_timeout_failure_can_resume(monkeypatch, client):
     assert checkpoint["status"] == "resumable"
     assert checkpoint["error"]["type"] == "provider_timeout"
     assert checkpoint["error"]["retryable"] is True
+    history = checkpoint["tool_call_history"]
+    assert [item["event"] for item in history] == [
+        "tool_start",
+        "tool_success",
+        "tool_start",
+        "tool_failed",
+    ]
+    assert history[-1]["tool_name"] == "extract_assets"
 
     resumed = client.post(f"/api/v1/agent/tasks/{task['id']}/resume")
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "awaiting_approval"
+
+
+def test_workflow_stage_runner_records_successful_tool_events(monkeypatch, client):
+    _session, plan = _approved_agent_plan(client)
+    monkeypatch.setattr(main, "extract_project_assets", lambda project_id, db: [])
+
+    response = client.post(f"/api/v1/agent/plans/{plan['id']}/stages/assets/approve")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["result_data"]["asset_count"] == 0
+    history = body["result_data"]["tool_call_history"]
+    assert [item["tool_name"] for item in history] == [
+        "approve_script",
+        "approve_script",
+        "extract_assets",
+        "extract_assets",
+    ]
+    assert [item["event"] for item in history] == [
+        "tool_start",
+        "tool_success",
+        "tool_start",
+        "tool_success",
+    ]
 
 
 def test_workflow_task_quota_failure_is_not_retryable(monkeypatch, client):

@@ -110,6 +110,29 @@ def write_checkpoint(
     return checkpoint
 
 
+def append_tool_event(
+    task: WorkflowTask,
+    *,
+    event: str,
+    tool_name: str,
+    status: str,
+    detail: dict | None = None,
+) -> dict[str, Any]:
+    result_data = dict(task.result_data or {})
+    history = list(result_data.get("tool_call_history", []))
+    entry = {
+        "event": event,
+        "tool_name": tool_name,
+        "status": status,
+        "detail": detail or {},
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    history.append(entry)
+    result_data["tool_call_history"] = history
+    task.result_data = result_data
+    return entry
+
+
 def mark_running(task: WorkflowTask, *, input_snapshot: dict | None = None) -> None:
     task.status = WorkflowTaskStatus.running
     write_checkpoint(

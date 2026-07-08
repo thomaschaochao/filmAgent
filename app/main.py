@@ -111,6 +111,7 @@ from app.services.checkpoint import (
     write_checkpoint,
 )
 from app.services.crew import crew_status
+from app.services.crew_runner import CrewStageTool, run_stage_tools
 from app.services.deepseek import DeepSeekClient, DeepSeekError
 from app.services.image_generation import ImageGenerationError, generate_image
 from app.services.orchestrator import continue_conversation, create_plan, index_script
@@ -2067,30 +2068,62 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
     db.commit()
     try:
         if stage_name == "assets":
-            approve_script(script.id, db)
-            assets = extract_project_assets(project.id, db)
-            for asset in assets:
-                create_asset_prompt(asset.id, db)
-            task.result_data = {"asset_count": len(assets)}
+            def extract_and_prompt_assets() -> dict:
+                assets = extract_project_assets(project.id, db)
+                for asset in assets:
+                    create_asset_prompt(asset.id, db)
+                return {"asset_count": len(assets)}
+
+            results = run_stage_tools(
+                task,
+                db,
+                [
+                    CrewStageTool("approve_script", lambda: approve_script(script.id, db)),
+                    CrewStageTool("extract_assets", extract_and_prompt_assets),
+                ],
+            )
+            task.result_data = {
+                **(task.result_data or {}),
+                "asset_count": results["extract_assets"]["asset_count"],
+            }
             next_stage = "shots"
         elif stage_name == "shots":
-            scenes = create_shots(script.id, db)
-            task.result_data = {"scene_count": len(scenes)}
+            results = run_stage_tools(
+                task,
+                db,
+                [CrewStageTool("generate_storyboard", lambda: create_shots(script.id, db))],
+            )
+            task.result_data = {
+                **(task.result_data or {}),
+                "scene_count": len(results["generate_storyboard"]),
+            }
             next_stage = "prompts"
         elif stage_name == "prompts":
-            scenes = list_scenes(project.id, db)
-            mode = plan.project_spec.get("prompt_mode", "initial_frame")
-            count = 0
-            for scene in scenes:
-                for shot in scene.shots:
-                    create_prompt(shot.id, db, PromptGenerateRequest(mode=mode))
-                    count += 1
-            task.result_data = {"prompt_count": count, "mode": mode}
+            def generate_shot_prompts() -> dict:
+                scenes = list_scenes(project.id, db)
+                mode = plan.project_spec.get("prompt_mode", "initial_frame")
+                count = 0
+                for scene in scenes:
+                    for shot in scene.shots:
+                        create_prompt(shot.id, db, PromptGenerateRequest(mode=mode))
+                        count += 1
+                return {"prompt_count": count, "mode": mode}
+
+            results = run_stage_tools(
+                task,
+                db,
+                [CrewStageTool("generate_shot_prompts", generate_shot_prompts)],
+            )
+            task.result_data = {**(task.result_data or {}), **results["generate_shot_prompts"]}
             next_stage = "images"
         elif stage_name == "images":
-            task.result_data = {
-                "suggestion": "请先选择主要人物、核心场景和关键道具，再确认图片批次。"
-            }
+            suggestion = {"suggestion": "Select key assets before confirming image batches."}
+            run_stage_tools(
+                task,
+                db,
+                [CrewStageTool("get_workflow_status", lambda: suggestion)],
+            )
+            task.result_data = {**(task.result_data or {}), **suggestion}
             next_stage = "completed"
         else:
             raise HTTPException(status_code=409, detail="This stage cannot be executed directly")
