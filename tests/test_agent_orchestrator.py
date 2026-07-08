@@ -111,6 +111,8 @@ def test_crew_status_exposes_roles_without_secrets(client):
     assert descriptors["generate_shot_prompts"]["metadata"]["requires_user_approval"] is True
     assert body["runtime_factory"]["factory_ready"] is True
     assert body["runtime_factory"]["agent_count"] >= 6
+    assert body["runtime_factory"]["tool_handles_bound"] is True
+    assert body["runtime_factory"]["tool_handle_count"] >= 6
     assert "tool_start" in body["checkpoint_events"]
     assert "task_completed" in body["checkpoint_events"]
     assert "api_key" not in str(body).lower()
@@ -137,6 +139,8 @@ def test_crew_runtime_preflight_allows_fallback_workflow_exercise(client):
     assert body["agent_count"] >= 6
     assert body["task_count"] >= 6
     assert body["tool_descriptor_count"] >= 6
+    assert body["tool_handle_count"] >= 6
+    assert body["tool_handles_bound"] is True
     assert "api_key" not in str(body).lower()
 
 
@@ -230,11 +234,28 @@ def test_crewai_runtime_instantiates_agents_tasks_and_crew():
 
     assert result.crew is not None
     assert result.status["instantiated"] is True
+    assert result.status["tool_handles_bound"] is True
+    assert result.status["tool_handle_count"] >= 6
     assert len(calls["agents"]) >= 6
     assert len(calls["tasks"]) >= 6
     assert len(calls["crews"]) == 1
     assert calls["crews"][0]["process"] == "sequential"
     assert "registered internal tools" in calls["tasks"][0]["expected_output"]
+    producer_tools = calls["agents"][0]["tools"]
+    assert {tool.name for tool in producer_tools} == {
+        "retrieve_context",
+        "create_project",
+        "save_script",
+    }
+    tool_schema = (
+        producer_tools[0].args_schema.model_json_schema()
+        if hasattr(producer_tools[0].args_schema, "model_json_schema")
+        else producer_tools[0].args_schema
+    )
+    assert "query" in tool_schema["properties"]
+    assert tool_schema["additionalProperties"] is False
+    with pytest.raises(RuntimeError, match="not bound to an internal callable"):
+        producer_tools[0]._run(query="runway lights")
     assert "api_key" not in str(result.status).lower()
 
 

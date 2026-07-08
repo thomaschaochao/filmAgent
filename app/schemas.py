@@ -552,6 +552,8 @@ class CrewRuntimePreflightRead(BaseModel):
     agent_count: int
     task_count: int
     tool_descriptor_count: int
+    tool_handle_count: int
+    tool_handles_bound: bool
     can_exercise_workflow: bool
     message: str
     error: str

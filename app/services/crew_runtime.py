@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from importlib import import_module
+from pathlib import Path
 from typing import Any
+
+from pydantic import ConfigDict, create_model
 
 from app.services.crew import CREW_ROLES, CREW_TASKS, MEMORY_ISOLATION
 from app.services.crew_tools import build_crewai_tool_descriptors, crew_tool_adapter_status
@@ -14,13 +18,30 @@ class CrewRuntimeBuild:
     status: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class CrewRuntimeToolHandle:
+    name: str
+    description: str
+    args_schema: dict[str, Any]
+    metadata: dict[str, Any]
+
+    def run(self, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError(
+            f"CrewAI tool `{self.name}` is registered but not bound to an "
+            "internal callable in this runtime yet."
+        )
+
+
 def crew_runtime_factory_status() -> dict[str, Any]:
+    tool_descriptors = build_crewai_tool_descriptors()
     return {
         "factory_ready": True,
         "instantiates_on_demand": True,
         "agent_count": len(CREW_ROLES),
         "task_count": len(CREW_TASKS),
-        "tool_descriptor_count": len(build_crewai_tool_descriptors()),
+        "tool_descriptor_count": len(tool_descriptors),
+        "tool_handle_count": len(tool_descriptors),
+        "tool_handles_bound": True,
     }
 
 
@@ -28,6 +49,7 @@ def instantiate_crewai_runtime(crewai_module: Any | None = None) -> CrewRuntimeB
     module = crewai_module
     if module is None:
         try:
+            _ensure_crewai_storage_dir()
             module = import_module("crewai")
         except ImportError:
             return CrewRuntimeBuild(
@@ -47,12 +69,18 @@ def instantiate_crewai_runtime(crewai_module: Any | None = None) -> CrewRuntimeB
         crew_cls = module.Crew
         process_class = getattr(module, "Process", None)
         process = getattr(process_class, "sequential", None)
+        _ensure_crewai_storage_dir()
+        tool_handles = _tool_handles_by_name()
         agents = {
             role.key: agent_cls(
                 role=role.name,
                 goal=role.responsibility,
                 backstory=_agent_backstory(role.key, role.tools),
-                tools=[],
+                tools=[
+                    tool_handles[tool_name]
+                    for tool_name in role.tools
+                    if tool_name in tool_handles
+                ],
                 allow_delegation=False,
                 verbose=False,
             )
@@ -67,6 +95,8 @@ def instantiate_crewai_runtime(crewai_module: Any | None = None) -> CrewRuntimeB
             for task in CREW_TASKS
         ]
         kwargs = {"agents": list(agents.values()), "tasks": tasks, "verbose": False}
+        if "memory" in getattr(crew_cls, "model_fields", {}):
+            kwargs["memory"] = False
         if process is not None:
             kwargs["process"] = process
         crew = crew_cls(**kwargs)
@@ -113,6 +143,8 @@ def crew_runtime_preflight() -> dict[str, Any]:
         "agent_count": status["agent_count"],
         "task_count": status["task_count"],
         "tool_descriptor_count": status["tool_descriptor_count"],
+        "tool_handle_count": status["tool_handle_count"],
+        "tool_handles_bound": bool(status.get("tool_handles_bound")),
         "can_exercise_workflow": can_exercise_workflow,
         "message": (
             "CrewAI runtime instantiated; workflow can exercise CrewAI runtime boundaries."
@@ -121,6 +153,65 @@ def crew_runtime_preflight() -> dict[str, Any]:
         ),
         "error": status.get("error", ""),
     }
+
+
+def _tool_handles_by_name() -> dict[str, Any]:
+    try:
+        base_tool_cls = import_module("crewai.tools").BaseTool
+    except (ImportError, AttributeError):
+        base_tool_cls = None
+
+    handles: dict[str, Any] = {}
+    for descriptor in build_crewai_tool_descriptors():
+        if base_tool_cls is None:
+            handles[descriptor.name] = CrewRuntimeToolHandle(
+                name=descriptor.name,
+                description=descriptor.description,
+                args_schema=descriptor.args_schema,
+                metadata=descriptor.metadata,
+            )
+            continue
+        handles[descriptor.name] = _build_crewai_base_tool(descriptor, base_tool_cls)
+    return handles
+
+
+def _ensure_crewai_storage_dir() -> None:
+    storage_dir = Path("storage") / "crewai"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("CREWAI_STORAGE_DIR", str(storage_dir.resolve()))
+
+
+def _build_crewai_base_tool(descriptor: Any, base_tool_cls: type[Any]) -> Any:
+    args_model = _args_model_from_json_schema(descriptor.name, descriptor.args_schema)
+
+    class RegisteredCrewTool(base_tool_cls):
+        def _run(self, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError(
+                f"CrewAI tool `{descriptor.name}` is registered but not bound to an "
+                "internal callable in this runtime yet."
+            )
+
+    RegisteredCrewTool.__name__ = f"{descriptor.name.title().replace('_', '')}Tool"
+    return RegisteredCrewTool(
+        name=descriptor.name,
+        description=descriptor.description,
+        args_schema=args_model,
+    )
+
+
+def _args_model_from_json_schema(tool_name: str, schema: dict[str, Any]) -> type[Any]:
+    required = set(schema.get("required", []))
+    fields = {
+        name: (Any, ... if name in required else None)
+        for name in schema.get("properties", {})
+    }
+    if not fields:
+        fields = {"input": (str, None)}
+    return create_model(
+        f"{tool_name.title().replace('_', '')}Args",
+        __config__=ConfigDict(extra="forbid"),
+        **fields,
+    )
 
 
 def _agent_backstory(agent_key: str, tools: tuple[str, ...]) -> str:
