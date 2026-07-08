@@ -35,6 +35,33 @@ REQUIRED_FACTS = {
     "prompt_mode": "镜头提示词模式（首帧或故事板）",
 }
 
+FACT_OPTION_PRESETS = {
+    "name": [
+        {"label": "使用当前会话标题", "facts": {"name": ""}},
+        {"label": "先用“未命名影片项目”", "facts": {"name": "未命名影片项目"}},
+    ],
+    "visual_style": [
+        {"label": "电影感写实", "facts": {"visual_style": "电影感写实"}},
+        {"label": "高概念科幻写实", "facts": {"visual_style": "高概念科幻写实"}},
+        {"label": "动画电影风格", "facts": {"visual_style": "动画电影风格"}},
+    ],
+    "world_setting": [
+        {"label": "当代美国城市", "facts": {"world_setting": "当代美国城市"}},
+        {"label": "近未来亚洲都市", "facts": {"world_setting": "近未来亚洲都市"}},
+        {"label": "架空世界，地点待细化", "facts": {"world_setting": "架空世界，地点待细化"}},
+    ],
+    "aspect_ratio": [
+        {"label": "16:9 横屏", "facts": {"aspect_ratio": "16:9"}},
+        {"label": "2.39:1 宽银幕", "facts": {"aspect_ratio": "2.39:1"}},
+        {"label": "9:16 竖屏", "facts": {"aspect_ratio": "9:16"}},
+    ],
+    "prompt_mode": [
+        {"label": "首帧模式", "facts": {"prompt_mode": "initial_frame"}},
+        {"label": "故事板模式", "facts": {"prompt_mode": "storyboard"}},
+        {"label": "由智能体按镜头复杂度决定", "facts": {"prompt_mode": "auto"}},
+    ],
+}
+
 FACT_CATEGORIES = {
     "name": "production",
     "visual_style": "visual",
@@ -60,6 +87,58 @@ STAGES = [
 class ConversationResult:
     reply: str
     missing: list[str]
+
+
+def _reply_options(
+    session: AgentSession, missing_keys: list[str]
+) -> list[dict[str, object]]:
+    if not missing_keys:
+        return [
+            {
+                "label": "生成完整制作计划",
+                "action": "generate_plan",
+                "description": "先生成可确认的阶段计划，不会立即创建项目。",
+            },
+            {
+                "label": "我还要补充设定",
+                "custom": True,
+                "placeholder": "继续补充风格、地点、角色关系或制作偏好……",
+            },
+        ]
+    key = missing_keys[0]
+    presets = FACT_OPTION_PRESETS.get(key, [])
+    options: list[dict[str, object]] = []
+    for index, preset in enumerate(presets, start=1):
+        facts = dict(preset.get("facts", {}))
+        if key == "name" and facts.get("name") == "":
+            facts["name"] = session.title
+        label = str(preset.get("label", "选项"))
+        options.append(
+            {
+                "label": f"选项{index}：{label}",
+                "content": f"我选择{label}",
+                "facts": facts,
+                "description": preset.get("description", ""),
+            }
+        )
+    options.append(
+        {
+            "label": "其它想法",
+            "custom": True,
+            "placeholder": f"请输入{REQUIRED_FACTS.get(key, '补充信息')}，也可以同时补充其它设定……",
+        }
+    )
+    return options
+
+
+def _message_metadata(missing_keys: list[str], session: AgentSession) -> dict[str, object]:
+    missing = [REQUIRED_FACTS[key] for key in missing_keys]
+    return {
+        "missing_information": missing,
+        "missing_keys": missing_keys,
+        "option_mode": "clarify" if missing_keys else "plan_ready",
+        "reply_options": _reply_options(session, missing_keys),
+    }
 
 
 def upsert_memory(
@@ -164,7 +243,8 @@ def continue_conversation(
         if memory.status != "superseded"
     }
     current.update({key: value for key, value in explicit_facts.items() if value.strip()})
-    missing = [label for key, label in REQUIRED_FACTS.items() if not current.get(key)]
+    missing_keys = [key for key in REQUIRED_FACTS if not current.get(key)]
+    missing = [REQUIRED_FACTS[key] for key in missing_keys]
     if missing:
         session.status = AgentSessionStatus.clarifying
         reply = ai_reply or "在生成制作计划前，还需要确认：" + "、".join(missing) + "。"
@@ -176,7 +256,7 @@ def continue_conversation(
             session_id=session.id,
             role=ChatMessageRole.assistant,
             content=reply,
-            metadata_json={"missing_information": missing},
+            metadata_json=_message_metadata(missing_keys, session),
         )
     )
     db.commit()

@@ -59,6 +59,52 @@ def test_agent_can_plan_and_create_project_before_one_exists(client):
     assert index.json()["embedding_status"] in {"keyword_ready", "ready"}
 
 
+def test_agent_clarification_messages_include_guided_options(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Guided Session", "initial_input": "A pilot returns through rain."},
+    ).json()
+
+    assistant_message = session["messages"][-1]
+    metadata = assistant_message["metadata_json"]
+
+    assert session["status"] == "clarifying"
+    assert metadata["option_mode"] == "clarify"
+    assert metadata["missing_keys"]
+    assert metadata["reply_options"]
+    assert metadata["reply_options"][-1]["custom"] is True
+    assert "api_key" not in str(metadata).lower()
+
+
+def test_agent_plan_ready_message_offers_generate_plan_action(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Plan Ready", "initial_input": "A pilot studies the runway."},
+    ).json()
+
+    response = client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Plan Ready",
+                "visual_style": "cinematic realism",
+                "world_setting": "modern Seattle airport in heavy rain",
+                "aspect_ratio": "16:9",
+                "prompt_mode": "initial_frame",
+            },
+        },
+    )
+
+    body = response.json()
+    metadata = body["messages"][-1]["metadata_json"]
+    actions = {option.get("action") for option in metadata["reply_options"]}
+    assert body["status"] == "plan_ready"
+    assert metadata["option_mode"] == "plan_ready"
+    assert "generate_plan" in actions
+    assert any(option.get("custom") for option in metadata["reply_options"])
+
+
 def test_agent_plan_approval_is_idempotent(client):
     session = client.post(
         "/api/v1/agent/sessions",

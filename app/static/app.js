@@ -9,6 +9,7 @@ const state = {
   promptMode: "initial_frame", promptFrameCount: null, promptOverrides: new Map(),
   chatThreads: [], chatThread: null, chatTarget: null,
   agentSessions: [], agentSession: null, retrievalStatus: null, crewStatus: null, crewPreflight: null, showMasterAgent: false,
+  agentThinking: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -207,6 +208,53 @@ function renderProject() {
     </div>`;
 }
 
+function getLatestAssistantMessage(messages = []) {
+    return [...messages].reverse().find(message => message.role === "assistant");
+  }
+
+function renderAgentReplyOptions(message) {
+    const options = message?.metadata_json?.reply_options || [];
+    if (!options.length) return "";
+    return `<div class="agent-reply-options">${options.map((option, index) => `
+      <button class="agent-option-button" type="button" data-agent-option="${index}">
+        <strong>${esc(option.label)}</strong>
+        ${option.description ? `<span>${esc(option.description)}</span>` : ""}
+      </button>`).join("")}</div>`;
+  }
+
+async function sendAgentMessage(content, facts = {}) {
+    if (!content || !state.agentSession) return;
+    state.agentThinking = true;
+    renderMasterAgent();
+    try {
+      state.agentSession = await request(`/agent/sessions/${state.agentSession.id}/messages`, {
+        method: "POST", body: JSON.stringify({ content, facts }),
+      });
+    } finally {
+      state.agentThinking = false;
+      renderMasterAgent();
+    }
+  }
+
+async function handleAgentOption(button) {
+    const latest = getLatestAssistantMessage(state.agentSession?.messages || []);
+    const option = latest?.metadata_json?.reply_options?.[Number(button.dataset.agentOption)];
+    if (!option) return;
+    if (option.action === "generate_plan") {
+      await generateAgentPlan();
+      return;
+    }
+    if (option.custom) {
+      const input = $("#master-agent-input");
+      if (input) {
+        input.placeholder = option.placeholder || "输入你的其它想法……";
+        input.focus();
+      }
+      return;
+    }
+    await sendAgentMessage(option.content || option.label, option.facts || {});
+  }
+
 function renderMasterAgent() {
   const session = state.agentSession;
   const status = state.retrievalStatus;
@@ -232,6 +280,8 @@ function renderMasterAgent() {
   const memories = session?.memories || [];
   const missing = session?.messages?.at(-1)?.metadata_json?.missing_information || [];
   const messages = session?.messages || [];
+  const latestAssistant = getLatestAssistantMessage(messages);
+  const thinkingHtml = state.agentThinking ? `<div class="master-message assistant agent-thinking"><small>智能体</small><i></i><i></i><i></i><b>正在思考下一步……</b></div>` : "";
   $("#content").innerHTML = `
     <div class="agent-home">
       <div class="section-head"><div><span class="eyebrow">MASTER PRODUCTION AGENT</span><h2>从一句话开始完成整部影片的前期工作</h2><p>先澄清创作设定、生成计划，再由你逐阶段确认执行。</p></div><div class="actions">${state.project ? `<button class="button" data-action="close-master-agent">返回项目</button>` : ""}<button class="button" data-action="new-agent-session">新会话</button></div></div>
@@ -247,7 +297,33 @@ function renderMasterAgent() {
         </aside>
       </div>
     </div>`;
+  const messageContainer = $(".master-agent-messages");
+  if (messageContainer) {
+    const latestIndex = messages.findIndex(message => message.id === latestAssistant?.id);
+    const messageNodes = $$(".master-message", messageContainer);
+    if (latestIndex >= 0 && messageNodes[latestIndex]) {
+      messageNodes[latestIndex].insertAdjacentHTML("beforeend", renderAgentReplyOptions(latestAssistant));
+    }
+    if (state.agentThinking) {
+      messageContainer.insertAdjacentHTML("beforeend", thinkingHtml);
+    }
+    messageContainer.scrollTop = messageContainer.scrollHeight;
+  }
+  if (state.agentThinking) {
+    const input = $("#master-agent-input");
+    if (input) input.disabled = true;
+    $("#master-agent-form button[type='submit']")?.setAttribute("disabled", "disabled");
+  }
   const agentContextColumn = $(".agent-context-column");
+  if (agentContextColumn && plan && !session.project_id) {
+    const planCard = $$(".agent-context-card", agentContextColumn)[1];
+    planCard?.insertAdjacentHTML("beforeend", `
+      <div class="agent-plan-decision">
+        <strong>计划已生成，是否立即执行？</strong>
+        <p>立即执行会创建项目与剧本；稍后执行则保留计划，等你再确认。</p>
+        <div class="actions"><button class="button primary" data-agent-approve-plan="${plan.id}">立即执行计划</button><button class="button" data-action="defer-agent-plan">稍后执行</button></div>
+      </div>`);
+  }
   if (agentContextColumn && status) {
     agentContextColumn.insertAdjacentHTML("beforeend", `
       <section class="panel agent-context-card"><span class="eyebrow">LOCAL RAG</span><h3>Retrieval Status</h3>
@@ -709,6 +785,7 @@ document.addEventListener("click", event => {
 }, true);
 
 document.addEventListener("click", async event => {
+  const agentOptionButton = event.target.closest("[data-agent-option]");
   const approveMasterPlan = event.target.closest("[data-agent-approve-plan]");
   const approveMasterStage = event.target.closest("[data-agent-stage]");
   const chatTargetButton = event.target.closest("[data-chat-target]");
@@ -735,7 +812,8 @@ document.addEventListener("click", async event => {
   const shotCard = chatTargetButton ? null : event.target.closest("[data-shot-id]");
   const agentRun = event.target.closest("[data-agent-run]");
   try {
-    if (approveMasterPlan) await approveAgentPlan(approveMasterPlan.dataset.agentApprovePlan);
+    if (agentOptionButton) await handleAgentOption(agentOptionButton);
+    else if (approveMasterPlan) await approveAgentPlan(approveMasterPlan.dataset.agentApprovePlan);
     else if (approveMasterStage) await approveAgentStage(approveMasterStage.dataset.agentPlan, approveMasterStage.dataset.agentStage);
     else if (agentRun) await openAgentRunDetail(agentRun.dataset.agentRun);
     else if (projectButton) { await selectProject(projectButton.dataset.projectId); setStep("project"); }
@@ -779,6 +857,7 @@ document.addEventListener("click", async event => {
     else if (actionButton?.dataset.action === "open-master-agent") { state.showMasterAgent = true; render(); }
     else if (actionButton?.dataset.action === "close-master-agent") { state.showMasterAgent = false; render(); }
     else if (actionButton?.dataset.action === "generate-agent-plan") await generateAgentPlan();
+    else if (actionButton?.dataset.action === "defer-agent-plan") toast("计划已保留，可稍后从这里继续执行");
     else if (actionButton?.dataset.action === "crew-preflight") await runCrewPreflight();
     else if (event.target.closest("[data-agent-resume-task]")) await resumeAgentTask(event.target.closest("[data-agent-resume-task]").dataset.agentResumeTask);
     else if (event.target.closest("[data-agent-cancel-task]")) await cancelAgentTask(event.target.closest("[data-agent-cancel-task]").dataset.agentCancelTask);
@@ -839,12 +918,10 @@ document.addEventListener("submit", async event => {
   input.disabled = true;
   try {
     const facts = Object.fromEntries([...new FormData(event.target)].filter(([, value]) => value));
-    state.agentSession = await request(`/agent/sessions/${state.agentSession.id}/messages`, {
-      method: "POST", body: JSON.stringify({ content, facts }),
-    });
+    await sendAgentMessage(content, facts);
     input.value = "";
-    renderMasterAgent();
   } catch (error) { toast(error.message, "error"); }
+  finally { input.disabled = false; }
 });
 
 document.addEventListener("change", async event => {
