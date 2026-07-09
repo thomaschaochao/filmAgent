@@ -268,6 +268,14 @@ async function handleAgentOption(button) {
       await generateAgentPlan();
       return;
     }
+    if (option.action === "approve_plan") {
+      await approveAgentPlan(option.plan_id);
+      return;
+    }
+    if (option.action === "defer_plan") {
+      toast("计划已保留，可稍后从这个对话继续执行");
+      return;
+    }
     if (option.custom) {
       const input = $("#master-agent-input");
       if (input) {
@@ -331,12 +339,12 @@ function renderMasterAgent() {
         <section class="panel master-agent-panel">
           <header><div><span class="eyebrow">${session ? esc(agentSessionStatusLabels[session.status] || session.status) : "READY"}</span><h3>${esc(session?.title || "总控智能体")}</h3></div><span class="rag-badge ${status?.available ? "ready" : "fallback"}">${status?.available ? "BGE-M3 · QDRANT" : "关键词检索模式"}</span></header>
           <div class="master-agent-messages">${messages.length ? messages.map(renderAgentMessage).join("") : `<div class="agent-welcome"><strong>描述你的故事，或粘贴完整剧本</strong><p>我会识别视觉风格、时间地点和画幅；不确定的信息会先询问，不会直接创建项目。首帧/故事板会在后续按每个镜头复杂度自动判断。</p></div>`}</div>
-          ${session ? `<form id="master-agent-form" class="master-agent-form"><textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本……"></textarea><details class="agent-facts"><summary>快速补充项目设定（可选）</summary><div><input name="name" placeholder="项目名称"><input name="visual_style" placeholder="视觉风格"><input name="world_setting" placeholder="时代与地点"><select name="aspect_ratio"><option value="">画幅</option><option>16:9</option><option>2.39:1</option><option>4:3</option><option>9:16</option></select></div></details><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
+          ${session ? `<form id="master-agent-form" class="master-agent-form"><textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本；项目标题、风格、地点和画幅都可以直接用对话确认……"></textarea><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
         </section>
         <aside class="agent-context-column">
           ${renderAgentSessionHistory()}
           <section class="panel agent-context-card"><span class="eyebrow">CREATIVE MEMORY</span><h3>已确认创作信息</h3>${memories.length ? memories.map(item => `<div class="memory-row"><span>${esc(item.key)}</span><strong>${esc(item.value)}</strong></div>`).join("") : `<p>对话后会在这里形成可追溯的项目记忆。</p>`}${missing.length ? `<div class="missing-box"><strong>仍需确认</strong><p>${missing.map(esc).join("、")}</p></div>` : ""}</section>
-          <section class="panel agent-context-card"><span class="eyebrow">WORKFLOW PLAN</span><h3>制作计划</h3>${plan ? `<div class="agent-stage-list">${plan.tasks.map(task => `<div class="agent-stage ${task.status}"><span>${String(task.sequence).padStart(2,"0")}</span><div><strong>${esc(agentStageLabels[task.stage] || task.stage)}</strong><small>${esc(agentTaskStatusLabels[task.status] || task.status)}</small></div></div>`).join("")}</div>${!session.project_id ? `<button class="button primary full" data-agent-approve-plan="${plan.id}">确认计划并创建项目</button>` : activeTask ? `<button class="button primary full" data-agent-stage="${activeTask.stage}" data-agent-plan="${plan.id}" ${activeTask.status === "running" ? "disabled" : ""}>${activeTask.status === "failed" ? "重试" : "确认执行"} · ${esc(agentStageLabels[activeTask.stage] || activeTask.stage)}</button>` : ""}` : session && session.status === "plan_ready" ? `<button class="button primary full" data-action="generate-agent-plan">生成完整制作计划</button>` : `<p>关键信息齐全后才会生成计划。</p>`}</section>
+          <section class="panel agent-context-card"><span class="eyebrow">WORKFLOW PLAN</span><h3>制作计划</h3>${plan ? `<div class="agent-stage-list">${plan.tasks.map(task => `<div class="agent-stage ${task.status}"><span>${String(task.sequence).padStart(2,"0")}</span><div><strong>${esc(agentStageLabels[task.stage] || task.stage)}</strong><small>${esc(agentTaskStatusLabels[task.status] || task.status)}</small></div></div>`).join("")}</div>${!session.project_id ? `<p>计划已生成，请在对话中选择是否立即执行。</p>` : activeTask ? `<button class="button primary full" data-agent-stage="${activeTask.stage}" data-agent-plan="${plan.id}" ${activeTask.status === "running" ? "disabled" : ""}>${activeTask.status === "failed" ? "重试" : "确认执行"} · ${esc(agentStageLabels[activeTask.stage] || activeTask.stage)}</button>` : ""}` : session && session.status === "plan_ready" ? `<p>可以在对话中选择“生成完整制作计划”。</p>` : `<p>关键信息齐全后才会生成计划。</p>`}</section>
         </aside>
       </div>
     </div>`;
@@ -358,15 +366,6 @@ function renderMasterAgent() {
     $("#master-agent-form button[type='submit']")?.setAttribute("disabled", "disabled");
   }
   const agentContextColumn = $(".agent-context-column");
-  if (agentContextColumn && plan && !session.project_id) {
-    const planCard = $$(".agent-context-card", agentContextColumn)[2];
-    planCard?.insertAdjacentHTML("beforeend", `
-      <div class="agent-plan-decision">
-        <strong>计划已生成，是否立即执行？</strong>
-        <p>立即执行会创建项目与剧本；稍后执行则保留计划，等你再确认。</p>
-        <div class="actions"><button class="button primary" data-agent-approve-plan="${plan.id}">立即执行计划</button><button class="button" data-action="defer-agent-plan">稍后执行</button></div>
-      </div>`);
-  }
   if (agentContextColumn && status) {
     agentContextColumn.insertAdjacentHTML("beforeend", `
       <section class="panel agent-context-card"><span class="eyebrow">LOCAL RAG</span><h3>Retrieval Status</h3>
@@ -1020,8 +1019,7 @@ document.addEventListener("submit", async event => {
   if (!content || !state.agentSession) return;
   input.disabled = true;
   try {
-    const facts = Object.fromEntries([...new FormData(event.target)].filter(([, value]) => value));
-    await sendAgentMessage(content, facts);
+    await sendAgentMessage(content);
     input.value = "";
   } catch (error) { toast(error.message, "error"); }
   finally { input.disabled = false; }

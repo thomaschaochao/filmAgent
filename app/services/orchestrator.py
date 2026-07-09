@@ -71,19 +71,19 @@ class ConversationExtraction:
 FALLBACK_OPTION_PROFILES = {
     "theater": [
         {
-            "name": "",
+            "name": "后台灯下",
             "visual_style": "现实主义戏剧影像",
             "world_setting": "当代剧场后台",
             "aspect_ratio": "16:9",
         },
         {
-            "name": "",
+            "name": "开演之前",
             "visual_style": "舞台感电影光影",
             "world_setting": "现代小剧场与后台空间",
             "aspect_ratio": "2.39:1",
         },
         {
-            "name": "",
+            "name": "剧场暗门",
             "visual_style": "自然主义生活质感",
             "world_setting": "当代城市剧院环境",
             "aspect_ratio": "16:9",
@@ -91,19 +91,19 @@ FALLBACK_OPTION_PROFILES = {
     ],
     "aviation": [
         {
-            "name": "",
+            "name": "暴雨返航",
             "visual_style": "电影感写实",
             "world_setting": "当代机场与暴雨夜空",
             "aspect_ratio": "16:9",
         },
         {
-            "name": "",
+            "name": "最后进近",
             "visual_style": "紧张灾难片质感",
             "world_setting": "现代民航机场与驾驶舱",
             "aspect_ratio": "2.39:1",
         },
         {
-            "name": "",
+            "name": "雨夜塔台",
             "visual_style": "冷峻纪实影像",
             "world_setting": "雨夜机场跑道与塔台周边",
             "aspect_ratio": "16:9",
@@ -111,19 +111,19 @@ FALLBACK_OPTION_PROFILES = {
     ],
     "default": [
         {
-            "name": "",
+            "name": "未命名影片",
             "visual_style": "电影感写实",
             "world_setting": "当代城市环境",
             "aspect_ratio": "16:9",
         },
         {
-            "name": "",
+            "name": "暗场之前",
             "visual_style": "戏剧化电影光影",
             "world_setting": "近现代室内外生活空间",
             "aspect_ratio": "2.39:1",
         },
         {
-            "name": "",
+            "name": "另一种日常",
             "visual_style": "自然主义生活质感",
             "world_setting": "架空但现实可信的故事世界",
             "aspect_ratio": "16:9",
@@ -182,6 +182,22 @@ def _plan_ready_options() -> list[dict[str, object]]:
     ]
 
 
+def _plan_approval_options(plan_id: str) -> list[dict[str, object]]:
+    return [
+        {
+            "label": "立即执行计划",
+            "action": "approve_plan",
+            "plan_id": plan_id,
+            "description": "创建项目与剧本，并进入资产提取阶段。",
+        },
+        {
+            "label": "稍后执行",
+            "action": "defer_plan",
+            "description": "保留当前计划，之后可回到这个对话继续执行。",
+        },
+    ]
+
+
 def _fallback_profile_key(session: AgentSession) -> str:
     context = f"{session.title or ''}\n{session.original_input or ''}".lower()
     if any(token in context for token in ("戏剧", "剧场", "舞台", "后台", "theater", "theatre")):
@@ -190,6 +206,10 @@ def _fallback_profile_key(session: AgentSession) -> str:
     if any(token in context for token in aviation_tokens):
         return "aviation"
     return "default"
+
+
+def _session_title_is_placeholder(title: str | None) -> bool:
+    return not title or title.strip() in {"新的影片计划", "总控智能体"}
 
 
 def _is_user_facing_fact_value(value: str) -> bool:
@@ -205,7 +225,11 @@ def _fallback_reply_options(
     profiles = FALLBACK_OPTION_PROFILES[_fallback_profile_key(session)]
     for index, profile in enumerate(profiles, start=1):
         facts = {
-            key: (session.title if key == "name" and not profile.get(key) else profile.get(key, ""))
+            key: (
+                session.title
+                if key == "name" and not _session_title_is_placeholder(session.title)
+                else profile.get(key, "")
+            )
             for key in missing_keys
         }
         facts = {
@@ -486,6 +510,21 @@ def create_plan(
         )
     session.status = AgentSessionStatus.awaiting_approval
     session.current_stage = "plan_approval"
+    db.add(
+        AgentMessage(
+            session_id=session.id,
+            role=ChatMessageRole.assistant,
+            content=(
+                f"完整制作计划 V{plan.version} 已生成。"
+                "要现在执行吗？立即执行会创建项目与剧本，之后继续逐阶段确认资产、分镜和提示词。"
+            ),
+            metadata_json={
+                "option_mode": "plan_approval",
+                "plan_id": plan.id,
+                "reply_options": _plan_approval_options(plan.id),
+            },
+        )
+    )
     db.commit()
     db.refresh(plan)
     return plan

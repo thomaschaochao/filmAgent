@@ -109,6 +109,41 @@ def test_agent_plan_ready_message_offers_generate_plan_action(client):
     assert "prompt_mode" not in {item["key"] for item in body["memories"]}
 
 
+def test_agent_plan_generation_returns_conversation_execution_choice(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Plan Execute", "initial_input": "A pilot studies the runway."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Plan Execute",
+                "visual_style": "cinematic realism",
+                "world_setting": "modern airport",
+                "aspect_ratio": "16:9",
+            },
+        },
+    )
+
+    planned = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={})
+
+    assert planned.status_code == 201
+    refreshed = client.get(f"/api/v1/agent/sessions/{session['id']}").json()
+    latest = refreshed["messages"][-1]
+    metadata = latest["metadata_json"]
+    actions = {option.get("action") for option in metadata["reply_options"]}
+    assert latest["role"] == "assistant"
+    assert "完整制作计划" in latest["content"]
+    assert metadata["option_mode"] == "plan_approval"
+    assert {"approve_plan", "defer_plan"}.issubset(actions)
+    assert any(
+        option.get("plan_id") == planned.json()["id"]
+        for option in metadata["reply_options"]
+    )
+
+
 def test_agent_uses_valid_ai_generated_clarification_options(monkeypatch, client):
     class FakeDeepSeekClient:
         def chat_json(self, *_):
@@ -223,6 +258,10 @@ def test_agent_fallback_options_are_contextual_and_user_facing_for_theater(clien
     options = session["messages"][-1]["metadata_json"]["reply_options"]
     option_text = str(options)
     assert options[0]["source"] == "fallback"
+    assert any(
+        option.get("facts", {}).get("name") in {"后台", "后台灯下", "开演之前", "剧场暗门"}
+        for option in options
+    )
     assert "剧场" in option_text or "舞台" in option_text
     assert "美国" not in option_text
     assert "科幻" not in option_text
