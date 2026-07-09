@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 from app.config import get_settings
 from app.database import Base, engine, get_db
 from app.models import (
+    AgentMessage,
     AgentRun,
     AgentSession,
     AgentSessionStatus,
@@ -1919,6 +1920,139 @@ def _require_workflow_task(db: Session, task_id: str) -> WorkflowTask:
     return task
 
 
+def _agent_stage_option(label: str, plan_id: str, stage: str, description: str) -> dict:
+    return {
+        "label": label,
+        "action": "approve_stage",
+        "plan_id": plan_id,
+        "stage": stage,
+        "description": description,
+    }
+
+
+def _agent_defer_option() -> dict:
+    return {
+        "label": "稍后执行",
+        "action": "defer_plan",
+        "description": "保留当前进度，之后可回到这个对话继续执行。",
+    }
+
+
+def _append_agent_assistant_message(
+    db: Session,
+    session: AgentSession,
+    content: str,
+    *,
+    option_mode: str,
+    reply_options: list[dict] | None = None,
+    extra_metadata: dict | None = None,
+) -> None:
+    metadata = {
+        "option_mode": option_mode,
+        "reply_options": reply_options or [],
+        **(extra_metadata or {}),
+    }
+    db.add(
+        AgentMessage(
+            session_id=session.id,
+            role=ChatMessageRole.assistant,
+            content=content,
+            metadata_json=metadata,
+        )
+    )
+
+
+def _append_project_created_message(db: Session, plan: WorkflowPlan, project: Project) -> None:
+    _append_agent_assistant_message(
+        db,
+        plan.session,
+        (
+            f"项目《{project.name}》和第一版剧本已创建。"
+            "接下来可以执行资产提取与资产提示词生成，我会从剧本里整理人物、场景和道具。"
+        ),
+        option_mode="stage_approval",
+        reply_options=[
+            _agent_stage_option(
+                "执行资产提取与提示词",
+                plan.id,
+                "assets",
+                "提取人物、场景和道具，并为每个资产生成提示词。",
+            ),
+            _agent_defer_option(),
+        ],
+        extra_metadata={"plan_id": plan.id, "stage": "assets"},
+    )
+
+
+def _append_stage_completed_message(db: Session, plan: WorkflowPlan, task: WorkflowTask) -> None:
+    result = task.result_data or {}
+    if task.stage == "assets":
+        asset_count = result.get("asset_count", 0)
+        content = (
+            f"资产提取与资产提示词已完成，共整理出 {asset_count} 个资产。"
+            "你可以点击页面顶部工作流里的“资产管理”查看、编辑、上传参考图或生成图片。"
+            "要继续拆分分镜吗？"
+        )
+        options = [
+            _agent_stage_option(
+                "继续拆分分镜",
+                plan.id,
+                "shots",
+                "根据当前剧本生成场景与镜头列表。",
+            ),
+            _agent_defer_option(),
+        ]
+        next_stage = "shots"
+    elif task.stage == "shots":
+        scene_count = result.get("scene_count", 0)
+        content = (
+            f"分镜拆分已完成，共生成 {scene_count} 个场景。"
+            "你可以点击顶部“分镜设计”查看并调整镜头。"
+            "要继续生成镜头首帧/故事板提示词吗？"
+        )
+        options = [
+            _agent_stage_option(
+                "生成镜头提示词",
+                plan.id,
+                "prompts",
+                "按每个镜头动作复杂度自动选择首帧或故事板提示词。",
+            ),
+            _agent_defer_option(),
+        ]
+        next_stage = "prompts"
+    elif task.stage == "prompts":
+        prompt_count = result.get("prompt_count", 0)
+        content = (
+            f"镜头提示词已生成，共 {prompt_count} 条。"
+            "你可以点击顶部“镜头提示词”查看、复制和重新生成。"
+            "如果需要，下一步可以再规划图片生成批次。"
+        )
+        options = [
+            _agent_stage_option(
+                "提议图片生成批次",
+                plan.id,
+                "images",
+                "先给出可执行的资产图或镜头图生成批次建议。",
+            ),
+            _agent_defer_option(),
+        ]
+        next_stage = "images"
+    elif task.stage == "images":
+        content = "图片生成批次建议已准备好。本阶段到这里结束，你可以继续在各工作流页面检查结果。"
+        options = []
+        next_stage = "completed"
+    else:
+        return
+    _append_agent_assistant_message(
+        db,
+        plan.session,
+        content,
+        option_mode="stage_approval" if options else "stage_completed",
+        reply_options=options,
+        extra_metadata={"plan_id": plan.id, "stage": next_stage},
+    )
+
+
 @app.post(
     f"{API}/agent/sessions",
     response_model=AgentSessionRead,
@@ -2081,6 +2215,7 @@ def approve_agent_plan(
     first_task = next(task for task in plan.tasks if task.stage == "project_script")
     first_task.status = WorkflowTaskStatus.completed
     first_task.result_data = {"project_id": project.id, "script_id": script.id}
+    _append_project_created_message(db, plan, project)
     db.commit()
     document, embedding_job = index_script(db, script)
     if not LocalRAG().status()["available"]:
@@ -2197,6 +2332,7 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
             if next_stage == "completed"
             else AgentSessionStatus.awaiting_stage_approval
         )
+        _append_stage_completed_message(db, plan, task)
         db.commit()
     except Exception as exc:
         db.rollback()

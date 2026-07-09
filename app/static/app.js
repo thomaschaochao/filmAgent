@@ -272,6 +272,10 @@ async function handleAgentOption(button) {
       await approveAgentPlan(option.plan_id);
       return;
     }
+    if (option.action === "approve_stage") {
+      await approveAgentStage(option.plan_id, option.stage);
+      return;
+    }
     if (option.action === "defer_plan") {
       toast("计划已保留，可稍后从这个对话继续执行");
       return;

@@ -111,7 +111,7 @@ FALLBACK_OPTION_PROFILES = {
     ],
     "default": [
         {
-            "name": "未命名影片",
+            "name": "镜头之外",
             "visual_style": "电影感写实",
             "world_setting": "当代城市环境",
             "aspect_ratio": "16:9",
@@ -140,6 +140,8 @@ INTERNAL_OPTION_PHRASES = (
     "缺失地点",
     "继续向用户追问",
 )
+
+PLACEHOLDER_PROJECT_NAMES = {"新的影片计划", "总控智能体", "未命名影片", "片名待定"}
 
 FACT_CHIP_LABELS = {
     "name": "项目",
@@ -209,7 +211,15 @@ def _fallback_profile_key(session: AgentSession) -> str:
 
 
 def _session_title_is_placeholder(title: str | None) -> bool:
-    return not title or title.strip() in {"新的影片计划", "总控智能体"}
+    return not title or title.strip() in PLACEHOLDER_PROJECT_NAMES
+
+
+def _is_valid_required_fact(key: str, value: str | None) -> bool:
+    if not value or not str(value).strip():
+        return False
+    if key == "name" and str(value).strip() in PLACEHOLDER_PROJECT_NAMES:
+        return False
+    return True
 
 
 def _is_user_facing_fact_value(value: str) -> bool:
@@ -278,6 +288,7 @@ def _validated_ai_reply_options(
             for key, value in facts.items()
             if key in required
             and str(value).strip()
+            and _is_valid_required_fact(key, str(value).strip())
             and _is_user_facing_fact_value(str(value).strip())
         }
         if not required.issubset(safe_facts):
@@ -433,7 +444,12 @@ def continue_conversation(
                 db, session, key, value.strip(), status="inferred", source_type="assistant"
             )
     for key, value in explicit_facts.items():
-        if key in FACT_CATEGORIES and key != "prompt_mode" and value.strip():
+        if (
+            key in FACT_CATEGORIES
+            and key != "prompt_mode"
+            and value.strip()
+            and _is_valid_required_fact(key, value)
+        ):
             upsert_memory(db, session, key, value.strip())
     current = {
         memory.key: memory.value
@@ -444,10 +460,15 @@ def continue_conversation(
         {
             key: value
             for key, value in explicit_facts.items()
-            if key in FACT_CATEGORIES and key != "prompt_mode" and value.strip()
+            if key in FACT_CATEGORIES
+            and key != "prompt_mode"
+            and value.strip()
+            and _is_valid_required_fact(key, value)
         }
     )
-    missing_keys = [key for key in REQUIRED_FACTS if not current.get(key)]
+    missing_keys = [
+        key for key in REQUIRED_FACTS if not _is_valid_required_fact(key, current.get(key))
+    ]
     missing = [REQUIRED_FACTS[key] for key in missing_keys]
     if missing:
         session.status = AgentSessionStatus.clarifying

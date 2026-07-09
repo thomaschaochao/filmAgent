@@ -144,6 +144,71 @@ def test_agent_plan_generation_returns_conversation_execution_choice(client):
     )
 
 
+def test_agent_placeholder_project_name_still_requires_naming(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "新的影片计划", "initial_input": "一个少年崇拜表哥的荒诞喜剧。"},
+    ).json()
+
+    response = client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "先用未命名影片，其它设定按下面来。",
+            "facts": {
+                "name": "未命名影片",
+                "visual_style": "幽默讽刺喜剧",
+                "world_setting": "当代县城生活环境",
+                "aspect_ratio": "16:9",
+            },
+        },
+    )
+
+    body = response.json()
+    latest = body["messages"][-1]
+    metadata = latest["metadata_json"]
+    assert body["status"] == "clarifying"
+    assert "项目名称" in metadata["missing_information"]
+    assert "name" not in {item["key"] for item in body["memories"]}
+    assert any(
+        option.get("facts", {}).get("name")
+        and option["facts"]["name"] != "未命名影片"
+        for option in metadata["reply_options"]
+    )
+
+
+def test_agent_plan_approval_asks_to_execute_asset_stage(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Stage Dialog", "initial_input": "A pilot studies the runway."},
+    ).json()
+    client.post(
+        f"/api/v1/agent/sessions/{session['id']}/messages",
+        json={
+            "content": "Use these settings.",
+            "facts": {
+                "name": "Stage Dialog",
+                "visual_style": "cinematic realism",
+                "world_setting": "modern airport",
+                "aspect_ratio": "16:9",
+            },
+        },
+    )
+    plan = client.post(f"/api/v1/agent/sessions/{session['id']}/plan", json={}).json()
+
+    approved = client.post(f"/api/v1/agent/plans/{plan['id']}/approve")
+
+    assert approved.status_code == 200
+    latest = approved.json()["messages"][-1]
+    metadata = latest["metadata_json"]
+    assert "项目《Stage Dialog》" in latest["content"]
+    assert "资产提取" in latest["content"]
+    assert metadata["option_mode"] == "stage_approval"
+    assert any(
+        option.get("action") == "approve_stage" and option.get("stage") == "assets"
+        for option in metadata["reply_options"]
+    )
+
+
 def test_agent_uses_valid_ai_generated_clarification_options(monkeypatch, client):
     class FakeDeepSeekClient:
         def chat_json(self, *_):
@@ -785,6 +850,25 @@ def test_workflow_stage_runner_records_successful_tool_events(monkeypatch, clien
         "tool_start",
         "tool_success",
     ]
+
+
+def test_asset_stage_completion_adds_agent_followup_message(monkeypatch, client):
+    session, plan = _approved_agent_plan(client)
+    monkeypatch.setattr(main, "extract_project_assets", lambda project_id, db: [])
+
+    response = client.post(f"/api/v1/agent/plans/{plan['id']}/stages/assets/approve")
+
+    assert response.status_code == 200
+    refreshed = client.get(f"/api/v1/agent/sessions/{session['id']}").json()
+    latest = refreshed["messages"][-1]
+    metadata = latest["metadata_json"]
+    assert "资产提取与资产提示词已完成" in latest["content"]
+    assert "资产管理" in latest["content"]
+    assert "继续拆分分镜" in str(metadata["reply_options"])
+    assert any(
+        option.get("action") == "approve_stage" and option.get("stage") == "shots"
+        for option in metadata["reply_options"]
+    )
 
 
 def test_stage_runner_rejects_unregistered_tools():
