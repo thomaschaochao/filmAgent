@@ -20,12 +20,28 @@ Its main goal is to keep character and visual assets consistent across a project
 - Use scoped AI chat to propose, review, apply, and revert project edits.
 - Inspect model calls, validation results, latency, and token usage.
 
+## Agent-assisted prompt workflow
+
+FilmPilot includes a Master Production Agent that helps users move from a rough creative idea to usable generation prompts. The agent is designed as a workflow partner: it asks for missing story facts, turns the answers into a staged production plan, and waits for user approval before applying changes to the project.
+
+The assisted workflow covers:
+
+1. **Project and story clarification:** collect genre, tone, characters, setting, visual style, and production constraints.
+2. **Script assistance:** help draft, revise, and approve a screenplay that can become the source of truth for later stages.
+3. **Asset planning:** identify characters, locations, props, and visual references that need consistent image prompts.
+4. **Shot breakdown:** split the approved script into scenes and shots, preserve dialogue context, and use local validation to repair numbering, references, and duplicates.
+5. **Prompt generation:** create asset prompts, shot initial-frame prompts, and storyboard prompts for 4-, 6-, or 9-frame visual progression.
+6. **Review and iteration:** continue the work through chat, inspect suggested changes, and apply or reject edits with scoped approvals.
+
+When optional extras are installed, FilmPilot can use local retrieval and CrewAI-style role orchestration to keep agent decisions grounded in the current project. If those extras are unavailable, the same workflow falls back to the built-in orchestrator so the local prompt-generation pipeline remains usable.
+
 ## Technology and architecture
 
 - **Backend:** Python 3.11+, FastAPI, Pydantic, SQLAlchemy
 - **Frontend:** Vanilla JavaScript, HTML, and CSS; no frontend build step
 - **Storage:** SQLite plus local filesystem storage
-- **AI providers:** DeepSeek for text workflows; OpenAI GPT Image and Volcengine Seedream for optional image generation
+- **Agent layer:** Master Agent workflow, optional local RAG, optional CrewAI runtime, and deterministic approval checkpoints
+- **AI providers:** DeepSeek for text, reasoning, and agent workflows; OpenAI GPT Image and Volcengine Seedream for optional image generation
 - **Quality:** Pytest and Ruff
 
 ```mermaid
@@ -38,7 +54,7 @@ flowchart LR
     API --> FS[Local asset storage]
 ```
 
-FilmPilot is a local-first monolith: the browser UI and REST API are served by one FastAPI process. Service modules isolate model orchestration and deterministic validation, while SQLAlchemy persists projects, scripts, shots, assets, prompts, chat proposals, snapshots, and agent-run metrics.
+FilmPilot is a local-first monolith: the browser UI and REST API are served by one FastAPI process. Service modules isolate model orchestration, retrieval, agent planning, tool execution, and deterministic validation, while SQLAlchemy persists projects, scripts, shots, assets, prompts, chat proposals, snapshots, agent sessions, workflow checkpoints, and agent-run metrics.
 
 ## Requirements
 
@@ -46,6 +62,7 @@ FilmPilot is a local-first monolith: the browser UI and REST API are served by o
 - `pip` and Python virtual environments
 - A DeepSeek API key for screenplay, storyboard, prompt, and chat generation
 - Optional OpenAI or Volcengine Ark credentials for image generation
+- Optional `rag`, `tools`, and `agents` Python extras for local retrieval, research tools, and CrewAI orchestration
 
 ## Installation
 
@@ -59,6 +76,12 @@ py -m venv .venv
 Copy-Item config.local.env.example config.local.env
 ```
 
+Optional agent extras:
+
+```powershell
+.venv\Scripts\python -m pip install -e ".[dev,rag,tools,agents]"
+```
+
 ### macOS and Linux
 
 ```bash
@@ -67,6 +90,12 @@ cd FilmPilot
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 cp config.local.env.example config.local.env
+```
+
+Optional agent extras:
+
+```bash
+.venv/bin/python -m pip install -e ".[dev,rag,tools,agents]"
 ```
 
 Open `config.local.env` and add the provider keys you intend to use:
