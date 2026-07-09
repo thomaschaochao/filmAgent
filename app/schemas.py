@@ -611,6 +611,9 @@ class RetrievalStatusRead(BaseModel):
     pending_jobs: int
     failed_jobs: int
     error: str | None
+    deepseek_thinking_enabled: bool = True
+    deepseek_reasoning_effort: str = "high"
+    web_search_configured: bool = False
 
 
 class RetrievalQuery(BaseModel):
@@ -633,6 +636,10 @@ class RetrievalHit(BaseModel):
 class WebSearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=1000)
     session_id: str | None = None
+
+
+class AgentResearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=1000)
 
 
 class PageFetchRequest(BaseModel):

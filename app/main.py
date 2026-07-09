@@ -52,6 +52,7 @@ from app.models import (
 from app.schemas import (
     AgentMessageCreate,
     AgentMetricsRead,
+    AgentResearchRequest,
     AgentRunDetailRead,
     AgentSessionCreate,
     AgentSessionRead,
@@ -2111,6 +2112,94 @@ def get_agent_session(session_id: str, db: DbSession) -> AgentSession:
     return _require_agent_session(db, session_id)
 
 
+@app.post(f"{API}/agent/sessions/{{session_id}}/research", response_model=AgentSessionRead)
+async def research_agent_session(
+    session_id: str, payload: AgentResearchRequest, db: DbSession
+) -> AgentSession:
+    session = _require_agent_session(db, session_id)
+    db.add(
+        AgentMessage(
+            session_id=session.id,
+            role=ChatMessageRole.user,
+            content=f"请联网搜索资料：{payload.query}",
+        )
+    )
+    try:
+        result = await search_web(payload.query)
+    except (WebToolError, RuntimeError) as exc:
+        _append_agent_assistant_message(
+            db,
+            session,
+            f"联网搜索暂时不可用：{exc}",
+            option_mode="research_failed",
+            reply_options=[
+                {
+                    "label": "先不用联网，按剧本继续",
+                    "content": "先不用联网，按当前剧本和已确认设定继续。",
+                    "facts": {},
+                    "description": "跳过外部资料，不影响后续制作流程。",
+                }
+            ],
+        )
+        db.commit()
+        return _require_agent_session(db, session.id)
+
+    persisted_sources = []
+    for source in result.get("sources", []):
+        url = source.get("url")
+        if not url:
+            continue
+        research = ResearchSource(
+            session_id=session.id,
+            query=payload.query,
+            title=source.get("title", url),
+            url=url,
+            summary=result.get("summary", "")[:4000],
+            fetch_method=result.get("provider", "web_search"),
+        )
+        db.add(research)
+        db.flush()
+        persisted_sources.append(
+            {"id": research.id, "title": research.title, "url": research.url}
+        )
+    source_lines = "\n".join(
+        f"- {item['title']}: {item['url']}" for item in persisted_sources[:5]
+    )
+    content = (
+        "联网搜索完成。下面是可用于创作参考的摘要：\n\n"
+        f"{result.get('summary', '').strip() or '搜索未返回可用摘要。'}"
+    )
+    if source_lines:
+        content += f"\n\n来源：\n{source_lines}"
+    _append_agent_assistant_message(
+        db,
+        session,
+        content,
+        option_mode="research_result",
+        reply_options=[
+            {
+                "label": "采用这些资料继续",
+                "content": "采用这些联网资料作为创作参考，继续完善制作计划。",
+                "facts": {},
+                "description": "仅将摘要作为当前对话参考；需要入库时再单独采纳来源。",
+            },
+            {
+                "label": "先不用联网，按剧本继续",
+                "content": "先不用联网，按当前剧本和已确认设定继续。",
+                "facts": {},
+                "description": "不采用这次搜索结果。",
+            },
+        ],
+        extra_metadata={
+            "query": payload.query,
+            "sources": persisted_sources,
+            "provider": result.get("provider"),
+        },
+    )
+    db.commit()
+    return _require_agent_session(db, session.id)
+
+
 @app.post(f"{API}/agent/sessions/{{session_id}}/archive", response_model=AgentSessionRead)
 def archive_agent_session(session_id: str, db: DbSession) -> AgentSession:
     session = _require_agent_session(db, session_id)
@@ -2605,7 +2694,13 @@ def rebuild_retrieval_index(
 
 @app.get(f"{API}/agent/retrieval/status", response_model=RetrievalStatusRead)
 def get_retrieval_status(db: DbSession) -> dict:
-    return get_retrieval_status_snapshot(db)
+    settings = get_settings()
+    return {
+        **get_retrieval_status_snapshot(db),
+        "deepseek_thinking_enabled": settings.deepseek_thinking_enabled,
+        "deepseek_reasoning_effort": settings.deepseek_reasoning_effort,
+        "web_search_configured": bool(settings.ark_search_model.strip()),
+    }
 
 
 @app.post(f"{API}/agent/retrieval/self-test", response_model=RetrievalSelfTestRead)

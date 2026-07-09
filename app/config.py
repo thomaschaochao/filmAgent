@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = 120.0
     deepseek_max_tokens: int = Field(default=32768, ge=1024, le=384000)
+    deepseek_thinking_enabled: bool = True
+    deepseek_reasoning_effort: str = "high"
     validation_rules_version: str = "2026-07-p0"
     storyboard_reference_coverage_threshold: float = 0.8
     storyboard_reference_match_threshold: float = 0.7

@@ -276,6 +276,10 @@ async function handleAgentOption(button) {
       await approveAgentStage(option.plan_id, option.stage);
       return;
     }
+    if (option.action === "research_web") {
+      await researchAgentSession(option.query || option.content || option.label);
+      return;
+    }
     if (option.action === "defer_plan") {
       toast("计划已保留，可稍后从这个对话继续执行");
       return;
@@ -320,6 +324,8 @@ function renderMasterAgent() {
     ["Device", status.device || "-"],
     ["Index", status.index_status || "-"],
     ["Jobs", `${status.pending_jobs || 0} pending / ${status.failed_jobs || 0} failed`],
+    ["DeepSeek Thinking", status.deepseek_thinking_enabled ? `enabled · ${status.deepseek_reasoning_effort || "high"}` : "disabled"],
+    ["Web Search", status.web_search_configured ? "configured" : "unavailable"],
   ] : [];
   const crewRows = crew ? [
     ["Framework", crew.framework],
@@ -521,6 +527,21 @@ async function runCrewPreflight() {
   state.crewPreflight = await request("/agent/crew/preflight", { method: "POST" });
   renderMasterAgent();
   toast(state.crewPreflight.can_exercise_workflow ? "CrewAI preflight ready" : "CrewAI preflight needs attention");
+}
+
+async function researchAgentSession(query) {
+  if (!state.agentSession || !query) return;
+  loading(true, "正在联网搜索", "正在检索公开资料并整理为对话摘要");
+  try {
+    state.agentSession = await request(`/agent/sessions/${state.agentSession.id}/research`, {
+      method: "POST", body: JSON.stringify({ query }),
+    });
+    await refreshAgentSessionLists();
+    renderMasterAgent();
+    toast("联网搜索完成");
+  } finally {
+    loading(false);
+  }
 }
 
 async function approveAgentPlan(planId) {

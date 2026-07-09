@@ -67,7 +67,56 @@ def test_chat_json_uses_configured_output_limit(monkeypatch: pytest.MonkeyPatch)
 
     assert client.chat_json("system", "user") == {"shots": []}
     assert requests[0]["max_tokens"] == 32768
+    assert requests[0]["thinking"] == {"type": "enabled"}
+    assert requests[0]["reasoning_effort"] == "high"
     assert client.last_call["finish_reason"] == "stop"
+    assert client.last_call["thinking_enabled"] is True
+    assert client.last_call["reasoning_effort"] == "high"
+
+
+def test_chat_json_can_disable_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[dict] = []
+    response = FakeResponse(
+        {
+            "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+            "usage": {},
+        }
+    )
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: FakeHttpClient(response, requests))
+    settings = Settings(
+        deepseek_api_key=SecretStr("test-key"),
+        deepseek_thinking_enabled=False,
+    )
+
+    assert DeepSeekClient(settings).chat_json("system", "user") == {}
+    assert requests[0]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in requests[0]
+
+
+def test_chat_json_ignores_reasoning_content_for_business_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict] = []
+    response = FakeResponse(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "reasoning_content": "private reasoning must not be parsed",
+                        "content": json.dumps({"ok": True}),
+                    },
+                }
+            ],
+            "usage": {},
+        }
+    )
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: FakeHttpClient(response, requests))
+
+    client = DeepSeekClient(make_settings())
+
+    assert client.chat_json("system", "user") == {"ok": True}
+    assert "private reasoning" not in client.last_call["raw_response"]
 
 
 def test_chat_json_reports_truncated_output_without_retry(

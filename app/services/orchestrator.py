@@ -169,6 +169,43 @@ def _custom_option(missing_keys: list[str]) -> dict[str, object]:
     }
 
 
+def _needs_web_research(content: str) -> bool:
+    keywords = (
+        "联网",
+        "搜索",
+        "查一下",
+        "查资料",
+        "真实资料",
+        "现实资料",
+        "参考资料",
+        "新闻",
+        "历史资料",
+        "法规",
+        "web",
+        "search",
+        "research",
+    )
+    lowered = content.lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _web_research_options(query: str) -> list[dict[str, object]]:
+    return [
+        {
+            "label": "联网搜索资料",
+            "action": "research_web",
+            "query": query[:1000],
+            "description": "搜索公开资料，结果先只进入当前对话供你确认。",
+        },
+        {
+            "label": "先不用联网，按剧本继续",
+            "content": "先不用联网，按当前剧本和已确认设定继续。",
+            "facts": {},
+            "description": "跳过外部资料，不影响后续制作流程。",
+        },
+    ]
+
+
 def _plan_ready_options() -> list[dict[str, object]]:
     return [
         {
@@ -334,13 +371,18 @@ def _message_metadata(
     missing_keys: list[str],
     session: AgentSession,
     ai_reply_options: list[dict[str, object]] | None = None,
+    *,
+    research_query: str | None = None,
 ) -> dict[str, object]:
     missing = [REQUIRED_FACTS[key] for key in missing_keys]
+    reply_options = _reply_options(session, missing_keys, ai_reply_options)
+    if research_query:
+        reply_options = _web_research_options(research_query) + reply_options
     return {
         "missing_information": missing,
         "missing_keys": missing_keys,
         "option_mode": "clarify" if missing_keys else "plan_ready",
-        "reply_options": _reply_options(session, missing_keys, ai_reply_options),
+        "reply_options": reply_options,
     }
 
 
@@ -481,7 +523,12 @@ def continue_conversation(
             session_id=session.id,
             role=ChatMessageRole.assistant,
             content=reply,
-            metadata_json=_message_metadata(missing_keys, session, extraction.reply_options),
+            metadata_json=_message_metadata(
+                missing_keys,
+                session,
+                extraction.reply_options,
+                research_query=content if _needs_web_research(content) else None,
+            ),
         )
     )
     db.commit()

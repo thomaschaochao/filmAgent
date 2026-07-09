@@ -209,6 +209,46 @@ def test_agent_plan_approval_asks_to_execute_asset_stage(client):
     )
 
 
+def test_agent_real_world_question_offers_web_research(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Research intent", "initial_input": "请联网搜索 1990 年代县城录像厅资料。"},
+    ).json()
+
+    options = session["messages"][-1]["metadata_json"]["reply_options"]
+
+    assert any(option.get("action") == "research_web" for option in options)
+    assert any(option.get("label") == "先不用联网，按剧本继续" for option in options)
+
+
+def test_agent_session_research_appends_summary_message(monkeypatch, client):
+    async def fake_search_web(query):
+        assert query == "runway threshold lights"
+        return {
+            "query": query,
+            "summary": "Runway threshold lights are green.",
+            "sources": [{"title": "Runway lights", "url": "https://example.com/runway"}],
+            "provider": "volcengine",
+        }
+
+    monkeypatch.setattr(main, "search_web", fake_search_web)
+    session = client.post("/api/v1/agent/sessions", json={"title": "research"}).json()
+
+    response = client.post(
+        f"/api/v1/agent/sessions/{session['id']}/research",
+        json={"query": "runway threshold lights"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    latest = body["messages"][-1]
+    assert "联网搜索完成" in latest["content"]
+    assert "Runway threshold lights are green" in latest["content"]
+    assert "https://example.com/runway" in latest["content"]
+    assert latest["metadata_json"]["option_mode"] == "research_result"
+    assert latest["metadata_json"]["sources"][0]["url"] == "https://example.com/runway"
+
+
 def test_agent_uses_valid_ai_generated_clarification_options(monkeypatch, client):
     class FakeDeepSeekClient:
         def chat_json(self, *_):
@@ -920,6 +960,9 @@ def test_retrieval_status_does_not_expose_local_paths(client):
     assert body["model"] == "BAAI/bge-m3"
     assert body["vector_backend"] == "qdrant_local"
     assert body["collection"] == "filmagent_knowledge_v1"
+    assert body["deepseek_thinking_enabled"] is True
+    assert body["deepseek_reasoning_effort"] == "high"
+    assert body["web_search_configured"] is False
     assert "path" not in body
 
 

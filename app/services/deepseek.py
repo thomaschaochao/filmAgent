@@ -77,8 +77,12 @@ class DeepSeekClient:
                 {"role": "user", "content": user_prompt},
             ],
             "max_tokens": self.settings.deepseek_max_tokens,
-            "thinking": {"type": "disabled"},
+            "thinking": {
+                "type": "enabled" if self.settings.deepseek_thinking_enabled else "disabled"
+            },
         }
+        if self.settings.deepseek_thinking_enabled:
+            payload["reasoning_effort"] = self.settings.deepseek_reasoning_effort
         if json_output:
             payload["response_format"] = {"type": "json_object"}
 
@@ -104,6 +108,12 @@ class DeepSeekClient:
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "raw_response": response_text,
+                "thinking_enabled": self.settings.deepseek_thinking_enabled,
+                "reasoning_effort": (
+                    self.settings.deepseek_reasoning_effort
+                    if self.settings.deepseek_thinking_enabled
+                    else None
+                ),
             }
             raise DeepSeekError("DeepSeek API request failed.", error_type="http_error") from exc
 
@@ -125,6 +135,12 @@ class DeepSeekClient:
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "raw_response": json.dumps(data, ensure_ascii=False)[:20000],
+            "thinking_enabled": self.settings.deepseek_thinking_enabled,
+            "reasoning_effort": (
+                self.settings.deepseek_reasoning_effort
+                if self.settings.deepseek_thinking_enabled
+                else None
+            ),
         }
         if finish_reason == "length":
             output_tokens = usage.get("completion_tokens")
