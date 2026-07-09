@@ -237,7 +237,7 @@ function renderAgentMessage(message) {
 function renderAgentReplyOptions(message) {
   const options = message?.metadata_json?.reply_options || [];
   if (!options.length) return "";
-  return `<div class="agent-reply-options">${options.map((option, index) => `
+  return `<div class="agent-reply-options" aria-label="建议回复">${options.map((option, index) => `
     <button class="agent-option-button" type="button" data-agent-option="${index}">
       <strong>${esc(option.label)}</strong>
       ${option.description ? `<span>${esc(option.description)}</span>` : ""}
@@ -339,7 +339,7 @@ function renderMasterAgent() {
         <section class="panel master-agent-panel">
           <header><div><span class="eyebrow">${session ? esc(agentSessionStatusLabels[session.status] || session.status) : "READY"}</span><h3>${esc(session?.title || "总控智能体")}</h3></div><span class="rag-badge ${status?.available ? "ready" : "fallback"}">${status?.available ? "BGE-M3 · QDRANT" : "关键词检索模式"}</span></header>
           <div class="master-agent-messages">${messages.length ? messages.map(renderAgentMessage).join("") : `<div class="agent-welcome"><strong>描述你的故事，或粘贴完整剧本</strong><p>我会识别视觉风格、时间地点和画幅；不确定的信息会先询问，不会直接创建项目。首帧/故事板会在后续按每个镜头复杂度自动判断。</p></div>`}</div>
-          ${session ? `<form id="master-agent-form" class="master-agent-form"><textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本；项目标题、风格、地点和画幅都可以直接用对话确认……"></textarea><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
+          ${session ? `<form id="master-agent-form" class="master-agent-form">${state.agentThinking ? "" : renderAgentReplyOptions(latestAssistant)}<textarea id="master-agent-input" required rows="4" placeholder="继续描述故事、回答设定问题，或粘贴剧本；项目标题、风格、地点和画幅都可以直接用对话确认……"></textarea><div class="master-agent-compose"><label class="button">上传 .txt / .md<input id="master-agent-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="button primary" type="submit">发送</button></div></form>` : `<div class="agent-start"><button class="button primary" data-action="new-agent-session">开始与智能体对话</button></div>`}
         </section>
         <aside class="agent-context-column">
           ${renderAgentSessionHistory()}
@@ -350,11 +350,6 @@ function renderMasterAgent() {
     </div>`;
   const messageContainer = $(".master-agent-messages");
   if (messageContainer) {
-    const latestIndex = messages.findIndex(message => message.id === latestAssistant?.id);
-    const messageNodes = $$(".master-message", messageContainer);
-    if (latestIndex >= 0 && messageNodes[latestIndex]) {
-      messageNodes[latestIndex].insertAdjacentHTML("beforeend", renderAgentReplyOptions(latestAssistant));
-    }
     if (state.agentThinking) {
       messageContainer.insertAdjacentHTML("beforeend", thinkingHtml);
     }
