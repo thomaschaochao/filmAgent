@@ -68,26 +68,78 @@ class ConversationExtraction:
     reply_options: list[dict[str, object]]
 
 
-FALLBACK_OPTION_PROFILES = [
-    {
-        "name": "",
-        "visual_style": "现实主义影像风格",
-        "world_setting": "沿用剧本中已经出现的时代、地点和文化背景，不额外预设国家或城市",
-        "aspect_ratio": "16:9",
-    },
-    {
-        "name": "",
-        "visual_style": "戏剧化舞台光影风格",
-        "world_setting": "暂不指定具体国家与城市，先保留为用户后续确认",
-        "aspect_ratio": "2.39:1",
-    },
-    {
-        "name": "",
-        "visual_style": "自然主义生活质感",
-        "world_setting": "由当前剧本语境决定，缺失地点时继续向用户追问",
-        "aspect_ratio": "16:9",
-    },
-]
+FALLBACK_OPTION_PROFILES = {
+    "theater": [
+        {
+            "name": "",
+            "visual_style": "现实主义戏剧影像",
+            "world_setting": "当代剧场后台",
+            "aspect_ratio": "16:9",
+        },
+        {
+            "name": "",
+            "visual_style": "舞台感电影光影",
+            "world_setting": "现代小剧场与后台空间",
+            "aspect_ratio": "2.39:1",
+        },
+        {
+            "name": "",
+            "visual_style": "自然主义生活质感",
+            "world_setting": "当代城市剧院环境",
+            "aspect_ratio": "16:9",
+        },
+    ],
+    "aviation": [
+        {
+            "name": "",
+            "visual_style": "电影感写实",
+            "world_setting": "当代机场与暴雨夜空",
+            "aspect_ratio": "16:9",
+        },
+        {
+            "name": "",
+            "visual_style": "紧张灾难片质感",
+            "world_setting": "现代民航机场与驾驶舱",
+            "aspect_ratio": "2.39:1",
+        },
+        {
+            "name": "",
+            "visual_style": "冷峻纪实影像",
+            "world_setting": "雨夜机场跑道与塔台周边",
+            "aspect_ratio": "16:9",
+        },
+    ],
+    "default": [
+        {
+            "name": "",
+            "visual_style": "电影感写实",
+            "world_setting": "当代城市环境",
+            "aspect_ratio": "16:9",
+        },
+        {
+            "name": "",
+            "visual_style": "戏剧化电影光影",
+            "world_setting": "近现代室内外生活空间",
+            "aspect_ratio": "2.39:1",
+        },
+        {
+            "name": "",
+            "visual_style": "自然主义生活质感",
+            "world_setting": "架空但现实可信的故事世界",
+            "aspect_ratio": "16:9",
+        },
+    ],
+}
+
+INTERNAL_OPTION_PHRASES = (
+    "沿用剧本",
+    "不额外预设",
+    "暂不指定",
+    "先保留为用户",
+    "由当前剧本语境决定",
+    "缺失地点",
+    "继续向用户追问",
+)
 
 FACT_CHIP_LABELS = {
     "name": "项目",
@@ -130,18 +182,37 @@ def _plan_ready_options() -> list[dict[str, object]]:
     ]
 
 
+def _fallback_profile_key(session: AgentSession) -> str:
+    context = f"{session.title or ''}\n{session.original_input or ''}".lower()
+    if any(token in context for token in ("戏剧", "剧场", "舞台", "后台", "theater", "theatre")):
+        return "theater"
+    aviation_tokens = ("飞行", "飞行员", "飞机", "机场", "跑道", "aviation", "pilot")
+    if any(token in context for token in aviation_tokens):
+        return "aviation"
+    return "default"
+
+
+def _is_user_facing_fact_value(value: str) -> bool:
+    return not any(phrase in value for phrase in INTERNAL_OPTION_PHRASES)
+
+
 def _fallback_reply_options(
     session: AgentSession, missing_keys: list[str]
 ) -> list[dict[str, object]]:
     if not missing_keys:
         return _plan_ready_options()
     options: list[dict[str, object]] = []
-    for index, profile in enumerate(FALLBACK_OPTION_PROFILES, start=1):
+    profiles = FALLBACK_OPTION_PROFILES[_fallback_profile_key(session)]
+    for index, profile in enumerate(profiles, start=1):
         facts = {
             key: (session.title if key == "name" and not profile.get(key) else profile.get(key, ""))
             for key in missing_keys
         }
-        facts = {key: value for key, value in facts.items() if value}
+        facts = {
+            key: value
+            for key, value in facts.items()
+            if value and _is_user_facing_fact_value(str(value))
+        }
         label_parts = [
             facts.get("visual_style"),
             facts.get("world_setting"),
@@ -155,7 +226,7 @@ def _fallback_reply_options(
                     f"{FACT_CHIP_LABELS.get(key, key)}：{value}" for key, value in facts.items()
                 ),
                 "facts": facts,
-                "description": "自动补齐当前缺失的关键制作信息，之后可继续细调。",
+                "description": "适合作为当前创作方向，之后仍可继续细调。",
                 "fact_chips": _fact_chips(facts),
                 "source": "fallback",
             }
@@ -181,7 +252,9 @@ def _validated_ai_reply_options(
         safe_facts = {
             key: str(value).strip()
             for key, value in facts.items()
-            if key in required and str(value).strip()
+            if key in required
+            and str(value).strip()
+            and _is_user_facing_fact_value(str(value).strip())
         }
         if not required.issubset(safe_facts):
             continue

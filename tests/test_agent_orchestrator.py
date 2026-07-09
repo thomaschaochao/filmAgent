@@ -208,7 +208,27 @@ def test_agent_rejects_invalid_ai_options_and_uses_combined_fallback(monkeypatch
     assert "prompt_mode" not in options[0]["facts"]
     assert "美国" not in str(options)
     assert "科幻" not in str(options)
+    assert "沿用剧本" not in str(options)
+    assert "不额外预设" not in str(options)
+    assert "暂不指定" not in str(options)
     assert options[-1]["custom"] is True
+
+
+def test_agent_fallback_options_are_contextual_and_user_facing_for_theater(client):
+    session = client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "后台", "initial_input": "一个发生在剧场后台的现实主义戏剧。"},
+    ).json()
+
+    options = session["messages"][-1]["metadata_json"]["reply_options"]
+    option_text = str(options)
+    assert options[0]["source"] == "fallback"
+    assert "剧场" in option_text or "舞台" in option_text
+    assert "美国" not in option_text
+    assert "科幻" not in option_text
+    assert "沿用剧本" not in option_text
+    assert "不额外预设" not in option_text
+    assert "暂不指定" not in option_text
 
 
 def test_agent_ai_context_does_not_include_other_session_memory(monkeypatch, client):
