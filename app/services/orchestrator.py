@@ -32,7 +32,6 @@ REQUIRED_FACTS = {
     "visual_style": "整体视觉风格",
     "world_setting": "故事发生的时代和地点",
     "aspect_ratio": "输出画幅",
-    "prompt_mode": "镜头提示词模式（首帧或故事板）",
 }
 
 FACT_CATEGORIES = {
@@ -72,24 +71,21 @@ class ConversationExtraction:
 FALLBACK_OPTION_PROFILES = [
     {
         "name": "",
-        "visual_style": "电影感写实",
-        "world_setting": "当代美国机场与城市环境",
+        "visual_style": "现实主义影像风格",
+        "world_setting": "沿用剧本中已经出现的时代、地点和文化背景，不额外预设国家或城市",
         "aspect_ratio": "16:9",
-        "prompt_mode": "initial_frame",
     },
     {
         "name": "",
-        "visual_style": "高概念科幻写实",
-        "world_setting": "近未来亚洲都市与高科技交通空间",
+        "visual_style": "戏剧化舞台光影风格",
+        "world_setting": "暂不指定具体国家与城市，先保留为用户后续确认",
         "aspect_ratio": "2.39:1",
-        "prompt_mode": "storyboard",
     },
     {
         "name": "",
-        "visual_style": "动画电影风格",
-        "world_setting": "架空世界，地点与时代由智能体继续细化",
+        "visual_style": "自然主义生活质感",
+        "world_setting": "由当前剧本语境决定，缺失地点时继续向用户追问",
         "aspect_ratio": "16:9",
-        "prompt_mode": "auto",
     },
 ]
 
@@ -99,7 +95,6 @@ FACT_CHIP_LABELS = {
     "world_setting": "世界",
     "aspect_ratio": "画幅",
     "language": "语言",
-    "prompt_mode": "模式",
 }
 
 
@@ -147,16 +142,10 @@ def _fallback_reply_options(
             for key in missing_keys
         }
         facts = {key: value for key, value in facts.items() if value}
-        mode_label = {
-            "initial_frame": "首帧模式",
-            "storyboard": "故事板模式",
-            "auto": "按镜头复杂度自动决定",
-        }.get(facts.get("prompt_mode", ""), facts.get("prompt_mode"))
         label_parts = [
             facts.get("visual_style"),
             facts.get("world_setting"),
             facts.get("aspect_ratio"),
-            mode_label,
         ]
         label = " / ".join(part for part in label_parts if part) or f"方案{index}"
         options.append(
@@ -192,7 +181,7 @@ def _validated_ai_reply_options(
         safe_facts = {
             key: str(value).strip()
             for key, value in facts.items()
-            if key in FACT_CATEGORIES and str(value).strip()
+            if key in required and str(value).strip()
         }
         if not required.issubset(safe_facts):
             continue
@@ -286,10 +275,6 @@ def _infer_facts(content: str) -> dict[str, str]:
     ratios = re.search(r"\b(16:9|2\.39:1|4:3|9:16|1:1)\b", content)
     if ratios:
         facts["aspect_ratio"] = ratios.group(1)
-    if "故事板" in content:
-        facts["prompt_mode"] = "storyboard"
-    elif "首帧" in content:
-        facts["prompt_mode"] = "initial_frame"
     for style in ("写实", "动画", "水墨", "赛博朋克", "黑白", "电影感"):
         if style in content:
             facts["visual_style"] = style
@@ -307,12 +292,14 @@ def _extract_with_ai(session: AgentSession, content: str) -> ConversationExtract
     memory = {item.key: item.value for item in session.memories if item.status != "superseded"}
     system = """You are FilmPilot's master pre-production agent. Return one JSON object only.
 Extract only information supported by the user's message. `facts` may contain name,
-visual_style, world_setting, aspect_ratio, language, prompt_mode, genre, tone, audience.
+visual_style, world_setting, aspect_ratio, language, genre, tone, audience.
 Do not invent missing facts. `reply` should briefly acknowledge the request and ask about
 important missing production information. Also return `reply_options`: 2-3 distinct options
 that directly answer your clarification question. Every option must include label, content,
 facts, and description. If multiple production facts are missing, each option should fill all
-missing facts together. Never claim that work has been executed."""
+missing facts together. Do not ask the user to choose initial-frame or storyboard mode during
+project discovery; that choice is made later per shot based on shot complexity. Do not reuse
+setting details from other projects or sessions. Never claim that work has been executed."""
     try:
         result = DeepSeekClient().chat_json(
             system,
@@ -324,7 +311,7 @@ missing facts together. Never claim that work has been executed."""
     safe_facts = {
         key: str(value).strip()
         for key, value in facts.items()
-        if key in FACT_CATEGORIES and str(value).strip()
+        if key in FACT_CATEGORIES and key != "prompt_mode" and str(value).strip()
     }
     reply = result.get("reply")
     reply_options = result.get("reply_options")
@@ -349,14 +336,20 @@ def continue_conversation(
                 db, session, key, value.strip(), status="inferred", source_type="assistant"
             )
     for key, value in explicit_facts.items():
-        if value.strip():
+        if key in FACT_CATEGORIES and key != "prompt_mode" and value.strip():
             upsert_memory(db, session, key, value.strip())
     current = {
         memory.key: memory.value
         for memory in session.memories
         if memory.status != "superseded"
     }
-    current.update({key: value for key, value in explicit_facts.items() if value.strip()})
+    current.update(
+        {
+            key: value
+            for key, value in explicit_facts.items()
+            if key in FACT_CATEGORIES and key != "prompt_mode" and value.strip()
+        }
+    )
     missing_keys = [key for key in REQUIRED_FACTS if not current.get(key)]
     missing = [REQUIRED_FACTS[key] for key in missing_keys]
     if missing:
@@ -388,7 +381,6 @@ def create_plan(
         "world_setting": memory.get("world_setting", "待用户确认"),
         "aspect_ratio": memory.get("aspect_ratio", "16:9"),
         "language": memory.get("language", "zh-CN"),
-        "prompt_mode": memory.get("prompt_mode", "initial_frame"),
         "script_content": session.original_input,
         "agent_runtime": crew_plan_metadata(),
         **project_spec,

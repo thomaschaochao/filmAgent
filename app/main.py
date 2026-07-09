@@ -2158,13 +2158,19 @@ def approve_agent_stage(plan_id: str, stage_name: str, db: DbSession) -> Workflo
         elif stage_name == "prompts":
             def generate_shot_prompts() -> dict:
                 scenes = list_scenes(project.id, db)
-                mode = plan.project_spec.get("prompt_mode", "initial_frame")
                 count = 0
+                mode_counts = {"initial_frame": 0, "storyboard": 0}
                 for scene in scenes:
                     for shot in scene.shots:
+                        mode = classify_shot_prompt_strategy(shot).recommended_mode
                         create_prompt(shot.id, db, PromptGenerateRequest(mode=mode))
+                        mode_counts[mode] += 1
                         count += 1
-                return {"prompt_count": count, "mode": mode}
+                return {
+                    "prompt_count": count,
+                    "mode": "per_shot_strategy",
+                    "mode_counts": mode_counts,
+                }
 
             results = run_stage_tools(
                 task,

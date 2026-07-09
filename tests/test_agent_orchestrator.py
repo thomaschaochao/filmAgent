@@ -106,6 +106,7 @@ def test_agent_plan_ready_message_offers_generate_plan_action(client):
     assert metadata["option_mode"] == "plan_ready"
     assert "generate_plan" in actions
     assert any(option.get("custom") for option in metadata["reply_options"])
+    assert "prompt_mode" not in {item["key"] for item in body["memories"]}
 
 
 def test_agent_uses_valid_ai_generated_clarification_options(monkeypatch, client):
@@ -161,8 +162,8 @@ def test_agent_uses_valid_ai_generated_clarification_options(monkeypatch, client
         "visual_style",
         "world_setting",
         "aspect_ratio",
-        "prompt_mode",
     }
+    assert "prompt_mode" not in options[0]["facts"]
     assert options[-1]["custom"] is True
 
 
@@ -202,9 +203,52 @@ def test_agent_rejects_invalid_ai_options_and_uses_combined_fallback(monkeypatch
 
     options = session["messages"][-1]["metadata_json"]["reply_options"]
     assert options[0]["source"] == "fallback"
-    assert len(options[0]["facts"]) >= 4
+    assert len(options[0]["facts"]) >= 3
     assert options[0]["facts"]["name"] == "Fallback Session"
+    assert "prompt_mode" not in options[0]["facts"]
+    assert "美国" not in str(options)
+    assert "科幻" not in str(options)
     assert options[-1]["custom"] is True
+
+
+def test_agent_ai_context_does_not_include_other_session_memory(monkeypatch, client):
+    captured_prompts: list[str] = []
+
+    class FakeDeepSeekClient:
+        def chat_json(self, _system_prompt, user_prompt):
+            captured_prompts.append(user_prompt)
+            return {"facts": {}, "reply": "请确认当前剧本设定。", "reply_options": []}
+
+    monkeypatch.setattr(orchestrator, "DeepSeekClient", FakeDeepSeekClient)
+    monkeypatch.setattr(
+        orchestrator,
+        "get_settings",
+        lambda: SimpleNamespace(master_agent_ai_enabled=True),
+    )
+
+    first = client.post("/api/v1/agent/sessions", json={"title": "Sci Fi"}).json()
+    client.post(
+        f"/api/v1/agent/sessions/{first['id']}/messages",
+        json={
+            "content": "确认科幻项目设定",
+            "facts": {
+                "name": "美国科幻项目",
+                "visual_style": "高概念科幻",
+                "world_setting": "近未来美国太空港",
+                "aspect_ratio": "2.39:1",
+            },
+        },
+    )
+    client.post(
+        "/api/v1/agent/sessions",
+        json={"title": "Drama", "initial_input": "一个发生在剧场后台的现实主义戏剧。"},
+    )
+
+    second_prompt = captured_prompts[-1]
+    assert "美国科幻项目" not in second_prompt
+    assert "近未来美国太空港" not in second_prompt
+    assert "高概念科幻" not in second_prompt
+    assert "剧场后台" in second_prompt
 
 
 def test_agent_option_facts_can_be_confirmed_into_memory(client):
