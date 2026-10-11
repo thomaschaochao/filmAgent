@@ -689,3 +689,28 @@ test('interrupted creation never overwrites an externally changed partial projec
   assert.equal(await folder.files.get('project.json').text(), 'External data');
   assert.equal(folder.log.some(item => item[0] === 'write'), false);
 });
+
+test('interrupted creation retry preserves its prior completed project even after another failed changed save', async () => {
+  const folder = new MemoryDirectory();
+  const store = storeFor(folder);
+  folder.failClose = 'manifest.json';
+  await assert.rejects(store.createFolder(project()), isCode('PERMISSION_DENIED'));
+  const firstSource = await folder.files.get('project.json').text();
+  folder.failClose = 'project.json';
+  const changed = project(); changed.name = 'Revised after interruption';
+  await assert.rejects(store.createFolder(changed), isCode('PERMISSION_DENIED'));
+  assert.equal(await folder.files.get('project.json').text(), firstSource);
+  folder.failClose = null;
+  await store.createFolder(changed);
+  assert.deepEqual(await storeFor(folder).openFolder(), changed);
+});
+
+test('an externally emptied completed project is not treated as an interrupted empty new file', async () => {
+  const folder = new MemoryDirectory();
+  const store = storeFor(folder);
+  folder.failClose = 'manifest.json';
+  await assert.rejects(store.createFolder(project()), isCode('PERMISSION_DENIED'));
+  folder.failClose = null;
+  folder.seed('project.json', '');
+  await assert.rejects(store.createFolder(project()), isCode('CONFLICT'));
+});

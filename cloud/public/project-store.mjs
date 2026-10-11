@@ -480,16 +480,18 @@ export class ProjectStore {
           if (await fileExists(directory, 'manifest.json') || await fileExists(directory, 'project.json')) {
             fail('EXISTING_PROJECT', 'This folder already has a manifest or project file. Open it, or choose a different folder.');
           }
-          pending = { directory, projectId: normalized.id, source: null, projectStarted: false, manifestStarted: false };
+          pending = { directory, projectId: normalized.id, allowedProjectSources: new Set(['']), projectStarted: false, manifestStarted: false };
           this._pendingCreation = pending;
         }
         const saved = await this._writeProject(directory, normalized, async source => {
           await this._checkPendingCreation(directory, pending);
-          pending.source = source;
+          pending.allowedProjectSources.add(source);
           pending.projectStarted = true;
         });
+        pending.allowedProjectSources = new Set([saved.source]);
         // The manifest marks a completed initial save. An interrupted initial save
         // can resume only in this session, after matching our own exact writes.
+        await this._checkPendingCreation(directory, pending);
         pending.manifestStarted = true;
         await writeFile(directory, 'manifest.json', MANIFEST_TEXT);
         this._directory = directory;
@@ -506,14 +508,15 @@ export class ProjectStore {
   }
 
   async _checkPendingCreation(directory, pending) {
-    for (const [name, started, expected] of [
-      ['project.json', pending.projectStarted, pending.source],
-      ['manifest.json', pending.manifestStarted, MANIFEST_TEXT],
+    for (const [name, started, allowed] of [
+      ['project.json', pending.projectStarted, pending.allowedProjectSources],
+      ['manifest.json', pending.manifestStarted, new Set(['', MANIFEST_TEXT])],
     ]) {
       if (!await fileExists(directory, name)) continue;
       if (!started) fail('CONFLICT', 'A project file appeared during the save. Choose a different folder to keep both versions.');
       const source = await readText(directory, name, name === 'manifest.json' ? 4096 : LIMITS.metadataBytes + 128 * 1024);
-      if (source !== '' && source !== expected) fail('CONFLICT', 'The interrupted save was changed outside FilmPilot. It was not overwritten.');
+      if (!allowed.has(source)) fail('CONFLICT', 'The interrupted save was changed outside FilmPilot. It was not overwritten.');
+      if (name === 'project.json') pending.allowedProjectSources = new Set([source]);
     }
   }
 
