@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
+import { ProjectStore } from '../public/project-store.mjs';
 
 test('workbench DOM flows preserve edits, isolate keys, and require proposal review', async t => {
   const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -118,6 +119,58 @@ test('workbench DOM flows preserve edits, isolate keys, and require proposal rev
       $('#import-file').dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
       assert.equal($('#project-title').textContent, before);
       assert.match($('#notice').textContent, /校验|无效|项目/);
+    });
+
+    await t.test('a saved project still warns before losing an unreviewed generation', async () => {
+      click('#export-project'); click('#notice button');
+      assert.doesNotMatch($('#save-status').textContent, /未保存/);
+      respond = () => Promise.resolve(generated({ script: '这份尚未审核的结果必须受到离开提醒保护。' }));
+      click('#generate-script'); await settle();
+      assert.equal($('#proposal-dialog').open, true);
+      const event = new window.Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event); assert.equal(event.defaultPrevented, true);
+      click('#discard-proposal');
+    });
+
+    await t.test('folder save cannot lose a generation finishing while files are busy', async () => {
+      const original = ProjectStore.prototype.createFolder;
+      let finishSave, snapshot, finishGeneration;
+      ProjectStore.prototype.createFolder = project => {
+        snapshot = structuredClone(project);
+        return new Promise(resolve => { finishSave = () => resolve(snapshot); });
+      };
+      try {
+        const previous = $('#script-text').value;
+        respond = () => new Promise(resolve => { finishGeneration = resolve; });
+        click('#generate-script'); click('#attach-folder');
+        finishGeneration(generated({ script: '保存过程中完成的生成建议。' })); await settle();
+        assert.equal($('#proposal-dialog').open, false);
+        assert.equal($('#apply-proposal').disabled, true);
+        $('#apply-proposal').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+        assert.equal($('#script-text').value, previous);
+        finishSave(); await settle();
+        assert.equal($('#proposal-dialog').open, true);
+        click('#apply-proposal');
+        assert.equal($('#script-text').value, '保存过程中完成的生成建议。');
+        assert.match($('#save-status').textContent, /未保存/);
+      } finally { ProjectStore.prototype.createFolder = original; }
+    });
+
+    await t.test('an asynchronous save never marks a newer project revision as saved', async () => {
+      const original = ProjectStore.prototype.createFolder;
+      let finishSave;
+      ProjectStore.prototype.createFolder = project => {
+        const snapshot = structuredClone(project);
+        return new Promise(resolve => { finishSave = () => resolve(snapshot); });
+      };
+      try {
+        click('#attach-folder');
+        // Simulate an asynchronous internal update despite controls being disabled.
+        input('#project-name', '保存期间更新的项目名称');
+        finishSave(); await settle();
+        assert.equal($('#project-title').textContent, '保存期间更新的项目名称');
+        assert.match($('#save-status').textContent, /未保存/);
+      } finally { ProjectStore.prototype.createFolder = original; }
     });
 
     await t.test('clear and pagehide remove credentials without a persisted fallback', async () => {

@@ -95,6 +95,7 @@ function renderView() {
 function updateControls() {
   const project = state.project, busy = Boolean(state.request), fileBusy = state.fileBusy;
   $('#save-project').disabled = !project || fileBusy;
+  $('#apply-proposal').disabled = fileBusy;
   $('#save-project').textContent = fileBusy ? '文件处理中…' : store.status.mode === 'folder' ? '保存项目 ↗' : '导出以保存 ↗';
   for (const selector of ['#open-folder', '#welcome-open', '#new-project', '#new-project-secondary', '#attach-folder', '#export-project', '#add-asset', '#add-shot', '#approve-script', '#unlock-script']) $(selector).disabled = fileBusy;
   for (const selector of ['#generate-script', '#extract-assets', '#generate-shots']) $(selector).disabled = !project || busy || fileBusy || (selector === '#generate-script' && project.script.status === 'approved');
@@ -149,7 +150,10 @@ function renderActivity() {
 async function fileOperation(operation) {
   if (state.fileBusy) return;
   state.fileBusy = true; updateControls();
-  try { return await operation(); } catch (error) { report(error); } finally { state.fileBusy = false; updateSummary(); updateControls(); }
+  try { return await operation(); } catch (error) { report(error); } finally {
+    state.fileBusy = false; updateSummary(); updateControls();
+    if (state.proposal && !$('#proposal-dialog').open) showProposal();
+  }
 }
 function newDialog() {
   if (!ensureCanSwitch()) return;
@@ -170,7 +174,18 @@ async function openFolder() {
 }
 async function attachFolder() {
   if (!state.project || state.fileBusy) return;
-  await fileOperation(async () => { const result = await store.createFolder(guardProject(state.project)); if (result) { state.project = normalizeForUI(result); state.savedRevision = state.revision; notice(); render(); activity('已保存到新选择的项目文件夹。'); toast('已保存到本地文件夹。'); } });
+  const projectId = state.project.id, revision = state.revision;
+  await fileOperation(async () => {
+    const result = await store.createFolder(guardProject(state.project));
+    if (!result) return;
+    if (state.project?.id !== projectId || state.revision !== revision) {
+      notice('已保存操作开始时的项目版本，当前内容未被替换。请检查当前项目并再次保存或导出。');
+      activity('文件夹已保存早前版本；保留当前较新的修改，未标记为已保存。');
+      return;
+    }
+    state.project = normalizeForUI(result); state.savedRevision = revision;
+    notice(); render(); activity('已保存到新选择的项目文件夹。'); toast('已保存到本地文件夹。');
+  });
 }
 async function saveProject() {
   if (!state.project || state.fileBusy) return;
@@ -257,7 +272,7 @@ async function generate(kind, targetId = null) {
   } finally { if (state.request === request) { state.request = null; updateControls(); } }
 }
 function showProposal() {
-  const proposal = state.proposal; if (!proposal) return;
+  const proposal = state.proposal; if (!proposal || state.fileBusy) return;
   $('#proposal-title').textContent = `审核${operationNames[proposal.kind]}`;
   const descriptions = { script: '应用后替换当前草稿。现有资产与分镜会保留，请在剧本变更后重新检查一致性。', assets: '追加新资产；同类型同名资产会保留原设定与参考图。', shots: '应用后替换整个现有镜头列表。请先检查时长、对白与资产引用。', assetPrompt: '只替换此资产的图片提示词。参考图会保留。', shotPrompts: '只替换此镜头的首帧与故事板提示词。', image: '应用后替换此资产当前参考图。保存前，请确认这就是你需要的版本。' };
   $('#proposal-description').textContent = descriptions[proposal.kind]; const content = $('#proposal-content'); content.replaceChildren();
@@ -271,7 +286,7 @@ function showProposal() {
   $('#proposal-dialog').showModal();
 }
 function applyCurrentProposal() {
-  if (!state.proposal || !state.project) return;
+  if (!state.proposal || !state.project || state.fileBusy) return;
   try {
     const kind = state.proposal.kind; const next = guardProject(applyProposal(state.project, state.revision, state.proposal));
     state.project = normalizeForUI(next); state.proposal = null; $('#proposal-dialog').close(); touch(); render(); activity(`已应用${operationNames[kind]}。请保存项目。`); toast('建议已应用，请保存项目。');
@@ -329,7 +344,7 @@ $('#shot-list').addEventListener('click', event => { const button = event.target
   else if (button.dataset.action === 'deleteShot' && confirm('删除这个镜头？其余镜头会按当前顺序重新编号。')) { state.project.shots = state.project.shots.filter(shot => shot.id !== card.dataset.id).map((shot, index) => ({ ...shot, number: index + 1 })); touch(); renderShots(); updateControls(); }
 });
 $('#clear-activity').addEventListener('click', () => { state.activity = []; renderActivity(); });
-window.addEventListener('beforeunload', event => { if (dirty() || state.request || state.fileBusy) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (dirty() || state.proposal || state.request || state.fileBusy) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('pagehide', () => clearKeys());
 window.addEventListener('pageshow', event => { if (event.persisted) { clearKeys(); toast('页面恢复后密钥已清除，请按需重新填写。'); } });
 if (!store.supported) $('#support-note').textContent = '此浏览器不支持直接访问本地文件夹。新建时选择“以项目包开始”，并在离开前导出项目包；稍后导入即可继续创作。';
