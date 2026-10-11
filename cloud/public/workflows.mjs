@@ -1,4 +1,6 @@
 /** Pure, bounded workflow validation. Never persists provider credentials. */
+import { validateProject, LIMITS as STORE_LIMITS } from './project-store.mjs';
+
 export const LIMITS = Object.freeze({ text: 120000, prompt: 16000, assets: 100, shots: 300, imageBytes: 8 * 1024 * 1024 });
 export const ASSET_TYPES = Object.freeze(['character', 'scene', 'prop']);
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -60,12 +62,62 @@ export function parseProposal(text, kind, project) {
 export function createProposal(project, revision, kind, data, targetId = null) {
   return { projectId: project.id, revision, kind, data: structuredClone(data), targetId };
 }
+const historyFull = '剧本版本已达到 100 个上限，原内容已保留。请先导出项目包备份，再在版本历史中明确删除不需要的版本。';
+function validateHistory(project) {
+  try { return validateProject(project); } catch (error) {
+    if (error?.code === 'INVALID_PROJECT' && error.message === 'Project text and metadata exceed the 2 MiB limit.') {
+      throw new Error('项目文字与版本历史超过 2 MiB 上限，原内容已保留。请先导出当前项目包，再删除不需要的历史版本或缩短文字。');
+    }
+    throw error;
+  }
+}
+// Mutates only a private candidate. Exact text is retained, including whitespace;
+// images, other project fields and credentials are never copied into a snapshot.
+function appendScriptVersion(candidate, title) {
+  const content = candidate.script.text;
+  if (!content.trim() || candidate.scripts?.some(version => version.content === content)) return false;
+  if ((candidate.scripts?.length || 0) >= STORE_LIMITS.scripts) throw new Error(historyFull);
+  candidate.scripts ??= [];
+  candidate.scripts.push({ id: id(), title: required(title, 200), content, approved: candidate.script.status === 'approved' });
+  return true;
+}
+export function saveScriptVersion(project, title = `手动保存 · ${new Date().toISOString()}`) {
+  const next = validateHistory(project);
+  if (!next.script?.text.trim()) throw new Error('请先写下剧本，再保存版本。');
+  if (!appendScriptVersion(next, title)) throw new Error('当前剧本已有相同内容的历史版本，无需重复保存。');
+  next.updatedAt = new Date().toISOString();
+  return validateHistory(next);
+}
+export function restoreScriptVersion(project, versionId) {
+  const next = validateHistory(project);
+  next.script ??= { text: '', status: 'draft' };
+  if (next.script?.status === 'approved') throw new Error('剧本已确认。请先解锁编辑，再恢复历史版本。');
+  const version = next.scripts?.find(item => item.id === versionId);
+  if (!version) throw new Error('此历史版本已不存在，请重新选择。');
+  if (!version.content.trim()) throw new Error('此历史版本没有剧本内容，不能恢复。');
+  if (next.script.text === version.content) throw new Error('当前草稿与此版本内容相同，无需恢复。');
+  appendScriptVersion(next, `恢复前快照 · ${new Date().toISOString()}`);
+  next.script = { text: version.content, status: 'draft' };
+  next.updatedAt = new Date().toISOString();
+  return validateHistory(next);
+}
+export function deleteScriptVersion(project, versionId) {
+  // Validate after explicit removal so pruning can recover an over-budget edit.
+  // The original remains untouched if the candidate still fails validation.
+  const next = structuredClone(project);
+  if (!next.scripts?.some(version => version.id === versionId)) throw new Error('此历史版本已不存在，请重新选择。');
+  next.scripts = next.scripts.filter(version => version.id !== versionId);
+  next.updatedAt = new Date().toISOString();
+  return validateHistory(next);
+}
 export function applyProposal(project, revision, proposal) {
   if (!proposal || proposal.projectId !== project.id || proposal.revision !== revision) throw new Error('项目已改变，此建议已过期。请重新生成。');
   const next = structuredClone(project);
   if (proposal.kind === 'script') {
     if (project.script.status === 'approved') throw new Error('剧本已确认。请先解锁编辑，再应用新草稿。');
-    next.script = { text: required(proposal.data.text, LIMITS.text), status: 'draft' };
+    const text = required(proposal.data.text, LIMITS.text);
+    if (text !== next.script.text) appendScriptVersion(next, `AI 替换前快照 · ${new Date().toISOString()}`);
+    next.script = { text, status: 'draft' };
   } else if (proposal.kind === 'assets') {
     const names = new Set(next.assets.map(asset => `${asset.type}:${asset.name.normalize('NFKC').toLowerCase()}`));
     for (const asset of proposal.data.assets) { const key = `${asset.type}:${asset.name.normalize('NFKC').toLowerCase()}`; if (!names.has(key)) { next.assets.push(structuredClone(asset)); names.add(key); } }
@@ -85,7 +137,7 @@ export function applyProposal(project, revision, proposal) {
     shot.storyboardPrompt = required(proposal.data.storyboardPrompt, LIMITS.prompt);
   } else throw new Error('不支持的建议类型。');
   next.updatedAt = new Date().toISOString();
-  return next;
+  return proposal.kind === 'script' ? validateHistory(next) : next;
 }
 export function imageFromResponse(response) {
   if (response?.error || response?.data?.[0]?.error) throw new Error('图片服务商未完成生成，原参考图已保留。');

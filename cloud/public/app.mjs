@@ -1,10 +1,10 @@
 import { ProjectStore, validateProject, LIMITS as STORE_LIMITS } from './project-store.mjs';
-import { LIMITS, createProject, parseProposal, createProposal, applyProposal, buildMessages, imageFromResponse, sanitizeError } from './workflows.mjs';
+import { LIMITS, createProject, parseProposal, createProposal, applyProposal, saveScriptVersion, restoreScriptVersion, deleteScriptVersion, buildMessages, imageFromResponse, sanitizeError } from './workflows.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const store = new ProjectStore();
-const state = { project: null, revision: 0, savedRevision: 0, view: 'overview', request: null, fileBusy: false, proposal: null, activity: [], imageTarget: null };
+const state = { project: null, revision: 0, savedRevision: 0, view: 'overview', request: null, fileBusy: false, proposal: null, activity: [], imageTarget: null, scriptVersionId: null };
 // Deliberately page-memory only. Do not add browser storage or include this object in project data.
 const keys = { deepseek: '', openai: '', seedream: '' };
 const views = { overview: '项目概览', script: '剧本创作', assets: '资产库', shots: '分镜工作台', activity: '活动记录' };
@@ -22,6 +22,7 @@ function guardProject(project) {
   return validateProject(project);
 }
 function safeMessage(error) {
+  if (error?.code === 'INVALID_PROJECT' && error.message === 'Project text and metadata exceed the 2 MiB limit.') return '项目文字与版本历史超过 2 MiB 上限。请缩短当前文字，或明确删除不需要的历史版本后重试；建议先保存可导出的备份。当前内容已保留。';
   const messages = {
     PERMISSION_DENIED: '文件夹写入权限已失效或被拒绝。可点击“重新授权”，或先导出项目包保留当前修改。',
     UNSUPPORTED: '此浏览器不支持直接访问文件夹。请使用项目包导入和导出，或在桌面 Chrome / Edge 中打开。',
@@ -77,6 +78,7 @@ function normalizeForUI(project) {
 }
 function setProject(project, saved = true) {
   cancelRequest(false); state.project = normalizeForUI(project); state.revision += 1; state.savedRevision = saved ? state.revision : state.revision - 1;
+  state.scriptVersionId = null; $('#script-version-title').value = '';
   state.proposal = null; $('#proposal-dialog').close(); notice(); state.view = 'overview'; render();
 }
 function setView(view) {
@@ -108,6 +110,7 @@ function updateControls() {
   $('#attach-folder').hidden = !store.supported;
   $('#open-folder').hidden = !store.supported;
   $('#welcome-open').hidden = !store.supported;
+  updateHistoryControls();
 }
 function updateSummary() {
   const project = state.project; if (!project) return;
@@ -131,7 +134,7 @@ function render() {
     const p = state.project;
     $('#project-name').value = p.name; $('#project-description').value = p.description;
     $('#project-style').value = p.settings.visualStyle; $('#project-ratio').value = p.settings.aspectRatio;
-    $('#script-text').value = p.script.text; updateSummary(); renderAssets(); renderShots();
+    $('#script-text').value = p.script.text; updateSummary(); renderAssets(); renderShots(); renderScriptHistory();
   }
   renderView(); updateControls();
 }
@@ -145,6 +148,72 @@ function renderShots() {
 }
 function renderActivity() {
   $('#activity-list').innerHTML = state.activity.length ? state.activity.map(item => `<div class="activity-row${item.error ? ' error' : ''}"><time>${item.at.toLocaleTimeString('zh-CN', { hour12: false })}</time><span>${esc(item.message)}</span></div>`).join('') : '<div class="activity-empty">操作记录会显示在这里。</div>';
+}
+
+function updateHistoryControls() {
+  const project = state.project, versions = project?.scripts || [];
+  const selected = versions.find(version => version.id === state.scriptVersionId);
+  const busy = !project || state.fileBusy || Boolean(state.request);
+  const duplicate = versions.some(version => version.content === project?.script.text);
+  $('#save-script-version').disabled = busy || !project?.script.text.trim() || duplicate;
+  $('#save-script-version').title = duplicate ? '当前剧本已有相同内容的版本。' : '将当前剧本加入项目历史；仍需手动保存或导出项目。';
+  $('#restore-script-version').disabled = busy || !selected?.content.trim() || project.script.status === 'approved' || selected.content === project.script.text;
+  $('#delete-script-version').disabled = busy || !selected;
+  $('#script-version-count').textContent = `${versions.length} / ${STORE_LIMITS.scripts} 个版本`;
+  const guidance = $('#script-history-guidance');
+  guidance.textContent = versions.length >= STORE_LIMITS.scripts
+    ? '版本已满。请先导出项目包备份，再明确删除不需要的版本。不会自动删除最早版本；替换未留存的剧本会被阻止。'
+    : '历史随项目保存到同一文件夹或项目包，仍需手动保存或导出。最多 100 个版本，项目文字与历史合计不超过 2 MiB。';
+  guidance.classList.toggle('history-warning', versions.length >= STORE_LIMITS.scripts);
+  $('#script-history-lock').hidden = project?.script.status !== 'approved';
+  if (selected) $('#script-version-meta').textContent = `${selected.approved ? '保存时已确认' : '保存时为草稿'} · ${selected.content.length.toLocaleString('zh-CN')} 字${selected.content === project.script.text ? ' · 与当前剧本相同' : ''}`;
+}
+function renderScriptHistory() {
+  const versions = state.project?.scripts || [], select = $('#script-version-select');
+  if (!versions.some(version => version.id === state.scriptVersionId)) state.scriptVersionId = versions.at(-1)?.id || null;
+  select.replaceChildren();
+  if (!versions.length) { const option = document.createElement('option'); option.textContent = '暂无历史版本'; option.value = ''; select.append(option); }
+  for (const version of [...versions].reverse()) {
+    const option = document.createElement('option'); option.value = version.id; option.textContent = version.title || '未命名版本'; select.append(option);
+  }
+  select.value = state.scriptVersionId || '';
+  const selected = versions.find(version => version.id === state.scriptVersionId);
+  $('#script-version-preview').textContent = selected?.content || '保存一版当前剧本后，就可以在这里预览与恢复。';
+  $('#script-version-meta').textContent = '';
+  $('#script-history-empty').hidden = versions.length > 0;
+  updateHistoryControls();
+}
+function saveCurrentScriptVersion() {
+  if (!requireProject()) return;
+  try {
+    const title = $('#script-version-title').value.trim() || `手动保存 · ${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const next = guardProject(saveScriptVersion(guardProject(state.project), title));
+    state.project = normalizeForUI(next); state.scriptVersionId = next.scripts.at(-1).id;
+    $('#script-version-title').value = ''; touch(); renderScriptHistory();
+    activity('当前剧本已加入版本历史。请保存项目或导出项目包。'); toast('版本已加入历史，请保存项目或导出。');
+  } catch (error) { report(error); }
+}
+function restoreSelectedScriptVersion() {
+  if (!requireProject()) return;
+  const version = state.project.scripts?.find(item => item.id === state.scriptVersionId); if (!version) return;
+  if (state.project.script.status === 'approved') { toast('请先点击“解锁编辑”，再恢复历史草稿。'); return; }
+  if (!confirm('将预览版本恢复为待审核的草稿？当前非空且尚未留存的剧本会先加入历史。现有资产与分镜会保留，请重新检查一致性。恢复后仍需手动保存项目。')) return;
+  try {
+    const next = guardProject(restoreScriptVersion(guardProject(state.project), version.id));
+    state.project = normalizeForUI(next); touch(); render();
+    notice('历史版本已恢复为草稿。现有资产与分镜已保留，请重新检查一致性，并重新确认剧本。请保存项目。');
+    activity('已将历史剧本恢复为草稿，并保留现有资产与分镜。请重新审核并保存项目。'); toast('已恢复为草稿，请重新审核并保存。');
+  } catch (error) { report(error); }
+}
+function deleteSelectedScriptVersion() {
+  if (!requireProject()) return;
+  const version = state.project.scripts?.find(item => item.id === state.scriptVersionId); if (!version) return;
+  if (!confirm('删除当前预览的历史版本？当前剧本、资产和分镜不会改变。保存项目后，该版本只能从你另行导出的备份恢复；建议先导出项目包。')) return;
+  try {
+    const next = guardProject(deleteScriptVersion(state.project, version.id));
+    state.project = normalizeForUI(next); state.scriptVersionId = null; touch(); renderScriptHistory();
+    activity('已删除一个历史版本，当前剧本未变。请保存项目。'); toast('历史版本已删除，请保存项目。');
+  } catch (error) { report(error); }
 }
 
 async function fileOperation(operation) {
@@ -274,7 +343,7 @@ async function generate(kind, targetId = null) {
 function showProposal() {
   const proposal = state.proposal; if (!proposal || state.fileBusy) return;
   $('#proposal-title').textContent = `审核${operationNames[proposal.kind]}`;
-  const descriptions = { script: '应用后替换当前草稿。现有资产与分镜会保留，请在剧本变更后重新检查一致性。', assets: '追加新资产；同类型同名资产会保留原设定与参考图。', shots: '应用后替换整个现有镜头列表。请先检查时长、对白与资产引用。', assetPrompt: '只替换此资产的图片提示词。参考图会保留。', shotPrompts: '只替换此镜头的首帧与故事板提示词。', image: '应用后替换此资产当前参考图。保存前，请确认这就是你需要的版本。' };
+  const descriptions = { script: '应用后替换当前草稿，并将非空且尚未留存的原剧本加入版本历史。现有资产与分镜会保留，请重新检查一致性，并手动保存项目。', assets: '追加新资产；同类型同名资产会保留原设定与参考图。', shots: '应用后替换整个现有镜头列表。请先检查时长、对白与资产引用。', assetPrompt: '只替换此资产的图片提示词。参考图会保留。', shotPrompts: '只替换此镜头的首帧与故事板提示词。', image: '应用后替换此资产当前参考图。保存前，请确认这就是你需要的版本。' };
   $('#proposal-description').textContent = descriptions[proposal.kind]; const content = $('#proposal-content'); content.replaceChildren();
   const section = (title, text) => { const element = document.createElement('section'); element.className = 'proposal-section'; const heading = document.createElement('h3'); heading.textContent = title; const paragraph = document.createElement('p'); paragraph.textContent = text; element.append(heading, paragraph); content.append(element); };
   if (proposal.kind === 'image') { const image = document.createElement('img'); image.src = proposal.data.image.dataUrl; image.alt = '待审核的资产参考图'; content.append(image); }
@@ -289,7 +358,9 @@ function applyCurrentProposal() {
   if (!state.proposal || !state.project || state.fileBusy) return;
   try {
     const kind = state.proposal.kind; const next = guardProject(applyProposal(state.project, state.revision, state.proposal));
-    state.project = normalizeForUI(next); state.proposal = null; $('#proposal-dialog').close(); touch(); render(); activity(`已应用${operationNames[kind]}。请保存项目。`); toast('建议已应用，请保存项目。');
+    state.project = normalizeForUI(next); state.proposal = null; $('#proposal-dialog').close(); touch(); render();
+    if (kind === 'script') notice('剧本建议已应用，原剧本的非空、不同内容已留存在版本历史。现有资产与分镜已保留，请重新检查一致性并保存项目。');
+    activity(`已应用${operationNames[kind]}。请保存项目。`); toast('建议已应用，请保存项目。');
   } catch (error) { report(error); }
 }
 function discardProposal() { state.proposal = null; $('#proposal-dialog').close(); activity('已放弃生成建议，项目内容未变。'); }
@@ -310,6 +381,10 @@ $('#import-file').addEventListener('change', event => { const file = event.targe
 for (const [selector, field] of [['#project-name', 'name'], ['#project-description', 'description']]) $(selector).addEventListener('input', event => { if (state.project) { state.project[field] = event.target.value; touch(); } });
 for (const [selector, field] of [['#project-style', 'visualStyle'], ['#project-ratio', 'aspectRatio']]) $(selector).addEventListener('input', event => { if (state.project) { state.project.settings[field] = event.target.value; touch(); } });
 $('#script-text').addEventListener('input', event => { if (state.project && state.project.script.status !== 'approved') { state.project.script.text = event.target.value; touch(); } });
+$('#save-script-version').addEventListener('click', saveCurrentScriptVersion);
+$('#script-version-select').addEventListener('change', event => { state.scriptVersionId = event.target.value; renderScriptHistory(); });
+$('#restore-script-version').addEventListener('click', restoreSelectedScriptVersion);
+$('#delete-script-version').addEventListener('click', deleteSelectedScriptVersion);
 $('#approve-script').addEventListener('click', () => { if (!state.project?.script.text.trim()) { toast('请先写下或应用剧本内容。'); return; } state.project.script.status = 'approved'; touch(); activity('剧本已确认并锁定，可继续提取资产和拆分镜头。'); });
 $('#unlock-script').addEventListener('click', () => { if (state.project && confirm('解锁后可以修改剧本。现有资产与分镜会保留，需要你重新检查与新剧本的一致性。')) { state.project.script.status = 'draft'; touch(); activity('剧本已解锁，后续资产与分镜请重新检查一致性。'); } });
 $('#generate-script').addEventListener('click', () => generate('script')); $('#extract-assets').addEventListener('click', () => generate('assets')); $('#generate-shots').addEventListener('click', () => generate('shots'));

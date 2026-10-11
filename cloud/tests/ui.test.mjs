@@ -173,6 +173,55 @@ test('workbench DOM flows preserve edits, isolate keys, and require proposal rev
       } finally { ProjectStore.prototype.createFolder = original; }
     });
 
+    await t.test('script history previews exact text, deduplicates and requires unlocked confirmed restoration', async () => {
+      const first = '  第一版 <img src=x onerror=alert(1)>\n保留换行和空格。  ';
+      const second = '第二版需要能够完整恢复。';
+      input('#script-text', first); input('#script-version-title', '<b>第一版</b>'); click('#save-script-version');
+      const firstId = $('#script-version-select').value;
+      const count = $('#script-version-select').options.length;
+      assert.equal($('#script-version-preview').textContent, first);
+      assert.equal($('#script-version-preview').children.length, 0);
+      assert.equal($('#script-version-select').selectedOptions[0].textContent, '<b>第一版</b>');
+      click('#save-script-version'); assert.equal($('#script-version-select').options.length, count);
+      input('#script-text', second); input('#script-version-title', '第二版'); click('#save-script-version');
+      const secondId = $('#script-version-select').value;
+      const select = id => { $('#script-version-select').value = id; $('#script-version-select').dispatchEvent(new window.Event('change', { bubbles: true })); };
+      select(firstId); assert.equal($('#script-version-preview').textContent, first);
+      assert.equal($('#script-text').value, second);
+      click('#approve-script'); assert.equal($('#restore-script-version').disabled, true);
+      assert.equal($('#script-history-lock').hidden, false);
+      globalThis.confirm = () => false; click('#unlock-script'); assert.equal($('#script-text').readOnly, true);
+      globalThis.confirm = () => true; click('#unlock-script'); assert.equal($('#restore-script-version').disabled, false);
+      globalThis.confirm = () => false; click('#restore-script-version'); assert.equal($('#script-text').value, second);
+      const assetsBefore = $('#asset-list').querySelectorAll('.asset-card').length;
+      globalThis.confirm = () => true; click('#restore-script-version');
+      assert.equal($('#script-text').value, first); assert.equal($('#script-text').readOnly, false);
+      assert.equal($('#asset-list').querySelectorAll('.asset-card').length, assetsBefore);
+      assert.match($('#save-status').textContent, /未保存/); assert.match($('#notice').textContent, /一致性/);
+      select(secondId); assert.equal($('#script-version-preview').textContent, second);
+      const beforeDelete = $('#script-version-select').options.length;
+      globalThis.confirm = () => false; click('#delete-script-version'); assert.equal($('#script-version-select').options.length, beforeDelete);
+      globalThis.confirm = () => true; click('#delete-script-version');
+      assert.equal($('#script-version-select').options.length, beforeDelete - 1); assert.equal($('#script-text').value, first);
+    });
+
+    await t.test('history packages roundtrip and memory keys cannot enter a version title', async () => {
+      const count = $('#script-version-select').options.length;
+      input('#script-text', '用于拒绝含密钥版本标题的安全剧本。'); input('#script-version-title', textKey); click('#save-script-version');
+      assert.equal($('#script-version-select').options.length, count);
+      assert.equal($('#notice').textContent.includes(textKey), false);
+      input('#script-version-title', '安全标题'); click('#save-script-version');
+      click('#export-project'); const blob = downloads.at(-1), exported = await blob.text();
+      const project = JSON.parse(exported).project;
+      assert.equal(project.scripts.length, count + 1); assert.equal(exported.includes(textKey), false);
+      const file = { name: 'history.filmpilot.json', size: blob.size, text: async () => exported };
+      Object.defineProperty($('#import-file'), 'files', { configurable: true, value: [file] });
+      $('#import-file').dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+      assert.equal($('#script-version-select').options.length, project.scripts.length);
+      assert.equal($('#script-text').value, project.script.text);
+      assert.equal($('#script-version-preview').textContent, project.scripts.at(-1).content);
+    });
+
     await t.test('clear and pagehide remove credentials without a persisted fallback', async () => {
       click('#clear-keys'); assert.equal($('#deepseek-key').value, ''); assert.equal($('#openai-key').value, '');
       const count = calls.length; click('#generate-script'); assert.equal(calls.length, count);

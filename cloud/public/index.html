@@ -55,6 +55,17 @@
         <section id="view-script" class="view-panel" hidden>
           <div class="section-toolbar"><div><h2>剧本创作 <span id="script-badge" class="badge">草稿</span></h2><p>确认剧本后，再推进资产与分镜。</p></div><div><button class="button" id="approve-script">确认剧本</button><button class="button" id="unlock-script" hidden>解锁编辑</button></div></div>
           <div class="editor-layout"><section class="panel script-editor"><div class="editor-topline"><span>SCREENPLAY</span><span id="script-length">0 字</span></div><label class="sr-only" for="script-text">剧本文本</label><textarea id="script-text" maxlength="120000" placeholder="在这里写下你的剧本，或让 AI 根据项目创意提出一版草稿。&#10;&#10;场景一 · 清晨 · 城市公寓&#10;人物、动作、对白……"></textarea><div class="editor-bottomline">已确认的剧本会锁定，修改前需先解锁。</div></section><aside class="panel generation-panel"><span class="ai-mark">✦</span><h3>一起打磨故事</h3><p>补充你的方向。AI 生成的草稿需要你审核后才会应用。</p><label for="script-instructions">这次想怎么写？</label><textarea id="script-instructions" rows="6" maxlength="12000" placeholder="例如：一支 60 秒的温暖短片，少量对白，结尾有一个小反转。"></textarea><button class="button primary full" id="generate-script">✦ 生成剧本建议</button><p class="cost-note">使用 DeepSeek。点击生成会发送当前创作上下文，服务商可能计费。</p></aside></div>
+          <section class="panel script-history" aria-labelledby="script-history-heading">
+            <div class="history-heading"><div><span class="mini-label">SCRIPT VERSIONS</span><h3 id="script-history-heading">版本历史</h3></div><span class="badge" id="script-version-count">0 / 100 个版本</span></div>
+            <p id="script-history-guidance" class="muted">历史随项目保存到同一文件夹或项目包，仍需手动保存或导出。</p>
+            <div class="history-save"><div><label for="script-version-title">版本名称 <span class="muted">（可选）</span></label><input id="script-version-title" maxlength="160" placeholder="例如：首稿、对白精简版"></div><button class="button" id="save-script-version">保存当前版本</button></div>
+            <p id="script-history-empty" class="muted">手动保存重要节点。应用 AI 替换或恢复历史前，也会保留非空且尚未留存的当前剧本。</p>
+            <label for="script-version-select">选择历史版本预览</label><select id="script-version-select" aria-describedby="script-version-meta"><option value="">暂无历史版本</option></select>
+            <p id="script-version-meta" class="muted" aria-live="polite"></p>
+            <pre id="script-version-preview" class="history-preview" tabindex="0" aria-label="历史版本剧本文本">保存一版当前剧本后，就可以在这里预览与恢复。</pre>
+            <p id="script-history-lock" class="inline-notice" hidden>剧本已确认。请先点击上方“解锁编辑”，再恢复历史草稿。</p>
+            <div class="history-actions"><p class="muted">恢复后须重新审核剧本，并检查现有资产与分镜的一致性。</p><div><button class="button danger-text" id="delete-script-version" disabled>删除此版本</button><button class="button primary" id="restore-script-version" disabled>恢复为草稿</button></div></div>
+          </section>
         </section>
         <section id="view-assets" class="view-panel" hidden>
           <div class="section-toolbar"><div><h2>资产库 <span class="badge" id="asset-total">0 个资产</span></h2><p>固定角色、场景与道具，让每个镜头属于同一个世界。</p></div><div><button class="button" id="add-asset">＋ 手动添加</button><button class="button primary" id="extract-assets">✦ 从剧本提取</button></div></div>
