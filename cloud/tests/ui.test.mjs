@@ -297,6 +297,32 @@ test('workbench DOM flows preserve edits, isolate keys, and require proposal rev
       assert.equal(JSON.stringify(project).includes(textKey), false);
     });
 
+    await t.test('shot controls reorder by identity, copy independently and invalidate stale proposals', async () => {
+      const cards = () => [...$('#shot-list').querySelectorAll('.shot-card')];
+      const ids = cards().map(card => card.dataset.id), originalText = cards()[0].querySelector('[data-field="description"]').value;
+      assert.equal(cards()[0].querySelector('[data-action="moveShotUp"]').disabled, true);
+      assert.equal(cards().at(-1).querySelector('[data-action="moveShotDown"]').disabled, true);
+      click('#navigation [data-view="script"]');
+      let finishGeneration; respond = () => new Promise(resolve => { finishGeneration = resolve; });
+      click('#generate-script'); click('#navigation [data-view="shots"]');
+      cards()[0].querySelector('[data-action="moveShotDown"]').click();
+      assert.deepEqual(cards().map(card => card.dataset.id), [ids[1], ids[0], ...ids.slice(2)]);
+      assert.equal(window.document.activeElement.dataset.id, ids[0]);
+      finishGeneration(generated({ script: '排序后不可应用的旧建议。' })); await settle();
+      assert.equal($('#proposal-dialog').open, false);
+      cards()[1].querySelector('[data-action="duplicateShot"]').click();
+      const copyId = cards()[2].dataset.id;
+      assert.equal(cards().length, ids.length + 1); assert.equal(ids.includes(copyId), false);
+      assert.equal(cards()[2].querySelector('[data-field="description"]').value, originalText);
+      assert.equal(window.document.activeElement.dataset.id, copyId);
+      const field = cards()[2].querySelector('[data-field="description"]'); field.value = '复制后独立修改的新镜头'; field.dispatchEvent(new window.Event('input', { bubbles: true }));
+      assert.equal(cards()[1].querySelector('[data-field="description"]').value, originalText);
+      click('#export-project'); const project = JSON.parse(await downloads.at(-1).text()).project;
+      assert.deepEqual(project.shots.map(shot => shot.number), [1, 2, 3, 4, 5, 6]);
+      assert.equal(project.shots[1].description, originalText); assert.equal(project.shots[2].description, '复制后独立修改的新镜头');
+      assert.match($('#save-status').textContent, /未保存/);
+    });
+
     await t.test('clear and pagehide remove credentials without a persisted fallback', async () => {
       click('#clear-keys'); assert.equal($('#deepseek-key').value, ''); assert.equal($('#openai-key').value, '');
       const count = calls.length; click('#generate-script'); assert.equal(calls.length, count);

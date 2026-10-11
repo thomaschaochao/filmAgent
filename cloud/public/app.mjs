@@ -1,6 +1,7 @@
 import { ProjectStore, validateProject, LIMITS as STORE_LIMITS } from './project-store.mjs';
 import { exportProductionBrief, exportShotListCsv } from './production-export.mjs';
 import { createDemoProject } from './demo-project.mjs';
+import { moveShot, duplicateShot } from './shot-editing.mjs';
 import { LIMITS, createProject, parseProposal, createProposal, applyProposal, saveScriptVersion, restoreScriptVersion, deleteScriptVersion, buildMessages, imageFromResponse, sanitizeError } from './workflows.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -115,6 +116,11 @@ function updateControls() {
   $('#attach-folder').hidden = !store.supported;
   $('#open-folder').hidden = !store.supported;
   $('#welcome-open').hidden = !store.supported;
+  $$('#shot-list .shot-card').forEach((card, index) => {
+    card.querySelector('[data-action="moveShotUp"]').disabled = fileBusy || index === 0;
+    card.querySelector('[data-action="moveShotDown"]').disabled = fileBusy || index === project.shots.length - 1;
+    card.querySelector('[data-action="duplicateShot"]').disabled = fileBusy || project.shots.length >= LIMITS.shots;
+  });
   updateHistoryControls();
 }
 function updateSummary() {
@@ -149,7 +155,7 @@ function renderAssets() {
 }
 function renderShots() {
   if (!state.project) return;
-  $('#shot-list').innerHTML = state.project.shots.length ? state.project.shots.map((shot, index) => `<article class="shot-card" data-id="${esc(shot.id)}"><div class="shot-card-header"><span class="shot-number">SHOT ${String(index + 1).padStart(2, '0')}</span><label for="duration-${esc(shot.id)}">时长 / 秒</label><input id="duration-${esc(shot.id)}" type="number" data-field="duration" min="0.1" max="120" step="0.1" value="${Number(shot.duration)}"><button class="text-button danger-text" data-action="deleteShot">删除</button></div><div class="shot-content-grid"><div><label for="desc-${esc(shot.id)}">画面、动作与镜头语言</label><textarea id="desc-${esc(shot.id)}" data-field="description" rows="4" maxlength="6000">${esc(shot.description)}</textarea></div><div><label for="dialogue-${esc(shot.id)}">对白 / 旁白</label><textarea id="dialogue-${esc(shot.id)}" data-field="dialogue" rows="4" maxlength="6000">${esc(shot.dialogue)}</textarea></div></div><div class="shot-ref-list" role="group" aria-label="此镜头引用的资产">${state.project.assets.map(asset => `<label><input type="checkbox" data-asset-ref="${esc(asset.id)}"${shot.assetIds.includes(asset.id) ? ' checked' : ''}>${esc(asset.name)}</label>`).join('') || '<span class="muted">暂无可引用资产</span>'}</div><details class="shot-prompts"><summary>首帧与故事板提示词</summary><div class="form-columns"><div><label for="first-${esc(shot.id)}">首帧 · 动作开始前</label><textarea id="first-${esc(shot.id)}" data-field="initialFramePrompt" rows="5" maxlength="16000">${esc(shot.initialFramePrompt)}</textarea></div><div><label for="board-${esc(shot.id)}">故事板 · 连续画面</label><textarea id="board-${esc(shot.id)}" data-field="storyboardPrompt" rows="5" maxlength="16000">${esc(shot.storyboardPrompt)}</textarea></div></div></details><div class="shot-card-footer"><span>保持人物、服装、空间和光线的一致性。</span><button class="button" data-action="shotPrompts">✦ 生成两种提示词</button></div></article>`).join('') : '<div class="empty-state"><span>▤</span><h3>下一步，让故事动起来</h3><p>确认剧本、整理资产后，拆分镜头并为每个镜头准备提示词。</p></div>';
+  $('#shot-list').innerHTML = state.project.shots.length ? state.project.shots.map((shot, index) => `<article class="shot-card" data-id="${esc(shot.id)}" tabindex="-1" aria-label="镜头 ${index + 1}"><div class="shot-card-header"><span class="shot-number">SHOT ${String(index + 1).padStart(2, '0')}</span><label for="duration-${esc(shot.id)}">时长 / 秒</label><input id="duration-${esc(shot.id)}" type="number" data-field="duration" min="0.1" max="120" step="0.1" value="${Number(shot.duration)}"><div class="shot-order-actions"><button class="text-button" data-action="moveShotUp" aria-label="上移镜头 ${index + 1}" title="上移并按当前顺序重新编号"${index === 0 ? ' disabled' : ''}>↑ 上移</button><button class="text-button" data-action="moveShotDown" aria-label="下移镜头 ${index + 1}" title="下移并按当前顺序重新编号"${index === state.project.shots.length - 1 ? ' disabled' : ''}>↓ 下移</button><button class="text-button" data-action="duplicateShot" aria-label="复制镜头 ${index + 1}" title="复制到当前镜头后，按顺序重新编号"${state.project.shots.length >= LIMITS.shots ? ' disabled' : ''}>复制</button><button class="text-button danger-text" data-action="deleteShot">删除</button></div></div><div class="shot-content-grid"><div><label for="desc-${esc(shot.id)}">画面、动作与镜头语言</label><textarea id="desc-${esc(shot.id)}" data-field="description" rows="4" maxlength="6000">${esc(shot.description)}</textarea></div><div><label for="dialogue-${esc(shot.id)}">对白 / 旁白</label><textarea id="dialogue-${esc(shot.id)}" data-field="dialogue" rows="4" maxlength="6000">${esc(shot.dialogue)}</textarea></div></div><div class="shot-ref-list" role="group" aria-label="此镜头引用的资产">${state.project.assets.map(asset => `<label><input type="checkbox" data-asset-ref="${esc(asset.id)}"${shot.assetIds.includes(asset.id) ? ' checked' : ''}>${esc(asset.name)}</label>`).join('') || '<span class="muted">暂无可引用资产</span>'}</div><details class="shot-prompts"><summary>首帧与故事板提示词</summary><div class="form-columns"><div><label for="first-${esc(shot.id)}">首帧 · 动作开始前</label><textarea id="first-${esc(shot.id)}" data-field="initialFramePrompt" rows="5" maxlength="16000">${esc(shot.initialFramePrompt)}</textarea></div><div><label for="board-${esc(shot.id)}">故事板 · 连续画面</label><textarea id="board-${esc(shot.id)}" data-field="storyboardPrompt" rows="5" maxlength="16000">${esc(shot.storyboardPrompt)}</textarea></div></div></details><div class="shot-card-footer"><span>保持人物、服装、空间和光线的一致性。</span><button class="button" data-action="shotPrompts">✦ 生成两种提示词</button></div></article>`).join('') : '<div class="empty-state"><span>▤</span><h3>下一步，让故事动起来</h3><p>确认剧本、整理资产后，拆分镜头并为每个镜头准备提示词。</p></div>';
 }
 function renderActivity() {
   $('#activity-list').innerHTML = state.activity.length ? state.activity.map(item => `<div class="activity-row${item.error ? ' error' : ''}"><time>${item.at.toLocaleTimeString('zh-CN', { hour12: false })}</time><span>${esc(item.message)}</span></div>`).join('') : '<div class="activity-empty">操作记录会显示在这里。</div>';
@@ -452,7 +458,18 @@ $('#shot-list').addEventListener('input', event => { const card = event.target.c
 });
 $('#shot-list').addEventListener('change', event => { if (event.target.dataset.field === 'duration' && !event.target.checkValidity()) { toast('镜头时长需在 0.1 到 120 秒之间。'); const shot = state.project.shots.find(item => item.id === event.target.closest('[data-id]').dataset.id); event.target.value = shot.duration; } });
 $('#shot-list').addEventListener('click', event => { const button = event.target.closest('[data-action]'), card = button?.closest('[data-id]'); if (!button || !card || !state.project || state.fileBusy) return;
-  if (button.dataset.action === 'shotPrompts') generate('shotPrompts', card.dataset.id);
+  if (['moveShotUp', 'moveShotDown', 'duplicateShot'].includes(button.dataset.action)) {
+    try {
+      const duplicate = button.dataset.action === 'duplicateShot', project = guardProject(state.project);
+      const next = duplicate ? duplicateShot(project, card.dataset.id) : moveShot(project, card.dataset.id, button.dataset.action === 'moveShotUp' ? -1 : 1);
+      const focusedId = duplicate ? next.shots.find(shot => !project.shots.some(old => old.id === shot.id)).id : card.dataset.id;
+      state.project = normalizeForUI(guardProject(next)); touch(); renderShots(); updateControls();
+      [...$('#shot-list').children].find(item => item.dataset.id === focusedId)?.focus();
+      activity(duplicate ? '已复制镜头并重新编号。请修改为需要的新版本，再保存项目。' : '已调整镜头顺序并重新编号，请保存项目。');
+      toast(duplicate ? '镜头已复制，原镜头内容未变。' : '镜头顺序已调整，编号已更新。');
+    } catch (error) { report(error); }
+  }
+  else if (button.dataset.action === 'shotPrompts') generate('shotPrompts', card.dataset.id);
   else if (button.dataset.action === 'deleteShot' && confirm('删除这个镜头？其余镜头会按当前顺序重新编号。')) { state.project.shots = state.project.shots.filter(shot => shot.id !== card.dataset.id).map((shot, index) => ({ ...shot, number: index + 1 })); touch(); renderShots(); updateControls(); }
 });
 $('#clear-activity').addEventListener('click', () => { state.activity = []; renderActivity(); });
