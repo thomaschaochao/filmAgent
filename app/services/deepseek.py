@@ -38,8 +38,9 @@ class DeepSeekClient:
         last_error: Exception | None = None
         for attempt in range(1, 3):
             self.attempt_count = attempt
+            # Regeneration can repair model JSON, not transport or provider failures.
+            content = self._request(system_prompt, user_prompt, json_output=True)
             try:
-                content = self._request(system_prompt, user_prompt, json_output=True)
                 if not content.strip():
                     raise DeepSeekError(
                         "DeepSeek returned empty content.", error_type="empty_output"
@@ -50,8 +51,6 @@ class DeepSeekClient:
                         "DeepSeek JSON response must be an object.", error_type="json_shape"
                     )
                 return parsed
-            except DeepSeekTruncatedError:
-                raise
             except (json.JSONDecodeError, DeepSeekError) as exc:
                 last_error = exc
         raise DeepSeekError(
@@ -92,49 +91,15 @@ class DeepSeekClient:
         }
         url = f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions"
         started = time.perf_counter()
-        try:
-            with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
-                response = client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            response_text = ""
-            if isinstance(exc, httpx.HTTPStatusError):
-                response_text = exc.response.text[:20000]
-            self.last_call = {
-                "provider": "deepseek",
-                "model": self.settings.deepseek_model,
-                "latency_ms": round((time.perf_counter() - started) * 1000),
-                "attempt_count": self.attempt_count,
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "raw_response": response_text,
-                "thinking_enabled": self.settings.deepseek_thinking_enabled,
-                "reasoning_effort": (
-                    self.settings.deepseek_reasoning_effort
-                    if self.settings.deepseek_thinking_enabled
-                    else None
-                ),
-            }
-            raise DeepSeekError("DeepSeek API request failed.", error_type="http_error") from exc
-
-        data = response.json()
-        usage = data.get("usage") or {}
-        choices = data.get("choices") or []
-        choice = choices[0] if choices else {}
-        finish_reason = choice.get("finish_reason")
         self.last_call = {
             "provider": "deepseek",
-            "model": data.get("model") or self.settings.deepseek_model,
-            "request_id": data.get("id") or response.headers.get("x-request-id"),
-            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "model": self.settings.deepseek_model,
             "attempt_count": self.attempt_count,
-            "input_tokens": usage.get("prompt_tokens"),
-            "output_tokens": usage.get("completion_tokens"),
-            "finish_reason": finish_reason,
             "max_tokens": self.settings.deepseek_max_tokens,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
-            "raw_response": json.dumps(data, ensure_ascii=False)[:20000],
+            # Provider error bodies may contain credentials or other private data.
+            "raw_response": "",
             "thinking_enabled": self.settings.deepseek_thinking_enabled,
             "reasoning_effort": (
                 self.settings.deepseek_reasoning_effort
@@ -142,6 +107,45 @@ class DeepSeekClient:
                 else None
             ),
         }
+        try:
+            with httpx.Client(timeout=self.settings.deepseek_timeout_seconds) as client:
+                response = client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DeepSeekError("DeepSeek API request failed.", error_type="http_error") from exc
+        finally:
+            self.last_call["latency_ms"] = round((time.perf_counter() - started) * 1000)
+
+        try:
+            data = response.json()
+            if not isinstance(data, dict):
+                raise TypeError
+            usage = data.get("usage")
+            if usage is None:
+                usage = {}
+            choices = data["choices"]
+            if (
+                not isinstance(usage, dict)
+                or not isinstance(choices, list)
+                or not choices
+                or not isinstance(choices[0], dict)
+            ):
+                raise TypeError
+            choice = choices[0]
+        except (ValueError, KeyError, TypeError):
+            raise DeepSeekError(
+                "DeepSeek API returned an unexpected response shape.",
+                error_type="response_shape",
+            ) from None
+
+        finish_reason = choice.get("finish_reason")
+        self.last_call.update({
+            "model": data.get("model") or self.settings.deepseek_model,
+            "request_id": data.get("id") or response.headers.get("x-request-id"),
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
+            "finish_reason": finish_reason,
+        })
         if finish_reason == "length":
             output_tokens = usage.get("completion_tokens")
             raise DeepSeekTruncatedError(
@@ -157,11 +161,15 @@ class DeepSeekClient:
                 error_type="incomplete_output",
             )
         try:
-            content = choice["message"]["content"] or ""
+            content = choice["message"]["content"]
+            if content is None:
+                content = ""
+            if not isinstance(content, str):
+                raise TypeError
             self.last_call["raw_response"] = content
             return content
-        except (KeyError, IndexError, TypeError) as exc:
+        except (KeyError, TypeError):
             raise DeepSeekError(
                 "DeepSeek API returned an unexpected response shape.",
                 error_type="response_shape",
-            ) from exc
+            ) from None
