@@ -1,5 +1,9 @@
 # FilmPilot
 
+An independent [free-tier Cloudflare BYOK workbench](cloud/README.md) is available in
+`cloud/`. Each user supplies their own provider keys and saves projects in a selected
+local folder or a portable project package. The original local application remains available.
+
 [English](README.md) | [简体中文](README.zh-CN.md) · **v1.0.0**
 
 FilmPilot is a **locally run companion for AI video generation**. It prepares and manages the creative material that video-generation models need: characters, scenes, scripts, shot lists, reference images, and production-ready prompts. FilmPilot does not replace a video-generation model; it helps creators build consistent inputs and a repeatable workflow before sending shots to one.
@@ -69,8 +73,8 @@ FilmPilot is a local-first monolith: the browser UI and REST API are served by o
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/thomaschaochao/FilmPilot.git
-cd FilmPilot
+git clone https://github.com/thomaschaochao/filmAgent.git
+cd filmAgent
 py -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 Copy-Item config.local.env.example config.local.env
@@ -85,8 +89,8 @@ Optional agent extras:
 ### macOS and Linux
 
 ```bash
-git clone https://github.com/thomaschaochao/FilmPilot.git
-cd FilmPilot
+git clone https://github.com/thomaschaochao/filmAgent.git
+cd filmAgent
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 cp config.local.env.example config.local.env

@@ -1,0 +1,100 @@
+# FilmPilot 免费云端工作台
+
+本目录是独立的 Cloudflare Workers 静态网页 + 无状态 BYOK 代理。本仓库原有的
+FastAPI、SQLite 和本地工作流继续保留，云端版不会读取或迁移原本地数据库、配置或密钥文件。
+
+## 数据与密钥边界
+
+- 每位使用者自行输入自己的 DeepSeek、OpenAI 或 Seedream API Key。
+- Key 仅保存在当前网页会话的内存中，刷新或点击清除后需要重新输入。
+- 调用时 Key 会经过此站点的 Cloudflare Worker 并发送给选定服务商；不会放在 URL、
+  项目文件、导出包、浏览器持久存储或共享服务器配置中。不要在剧本或提示词正文中粘贴密钥。
+- 服务端只允许固定的官方模型接口，不提供任意 URL 代理，不自动重试可能收费的请求。
+- Worker 关闭应用日志与追踪，不记录请求头或正文。供应商错误仅返回预设安全提示。
+- 站点没有服务端项目数据库、共享项目目录、用户账号或跨设备同步。
+  模型服务商仍按各使用者自己的账户计费；“免费部署”不代表模型调用免费。
+
+## 真实项目文件夹
+
+支持 File System Access API 的浏览器可由用户点击按钮选择一个项目文件夹。
+应用只访问自己的 manifest、项目 JSON 和清单中声明的图片，不扫描整个磁盘。
+
+```text
+用户选择的项目文件夹/
+  manifest.json
+  project.json
+  assets/
+    图片文件
+```
+
+Chrome/Edge 等支持此接口的浏览器可直接读写。Safari、Firefox 等不支持时，使用
+`.filmpilot.json` 项目包导入/导出；这是包含项目及图片的可下载文件，不是浏览器缓存。
+请依据界面的功能检测结果选择方式，不要仅根据浏览器名字判断支持情况。
+
+浏览器可在 IndexedDB 中记住已选目录的句柄，以便刷新后重新连接；不会把 API Key 写入。
+目录权限可能过期或被撤销，重新授权必须点击界面按钮。保存完成提示以文件关闭成功为准；
+权限取消、磁盘写入失败或检测到外部修改时保留未保存状态，不冒充已保存。
+请在关闭标签页前保存，并定期导出备份。
+
+## 功能范围
+
+云端版提供项目设定、剧本编辑/生成与确认、人物/场景/道具整理、镜头拆分、首帧与故事板
+提示词，以及参考图生成。AI 结果先预览，再由使用者应用。
+
+本地 BGE/Qdrant 检索、CrewAI 运行时、服务器爬虫和原数据库的自动迁移不包含在云端首版中；
+这些能力继续在原本地应用使用。云端项目格式是独立版本化格式。
+
+## 本地检查与预览
+
+需要 Node.js 22 或更高版本。
+
+```bash
+cd cloud
+npm ci
+npm test
+npm run check
+npm run dev
+```
+
+纯函数/代理测试不依赖浏览器；界面交互测试使用 JSDOM。所有测试使用 mock，
+不需要真实 API Key，不调用收费模型接口。JSDOM 不等同于真实浏览器的视觉或权限弹窗验收。
+
+## 部署
+
+配置只使用 Workers 与静态资源，不创建 Containers、D1、R2 或任何付费存储绑定。
+保留账户的 Workers Free 计划；如果控制台要求升级、开通订阅或绑定支付卡，应停止并核对。
+
+部署前需要由账户持有人授权所需的最小 Cloudflare 访问权限。不要把 Cloudflare token 或
+模型 Key 写进仓库，也不要把模型 Key 设置为此 Worker 的共享 secret。
+
+在授权的环境中先运行：
+
+```bash
+npx wrangler deploy --dry-run
+```
+
+确认构建通过、目标 Cloudflare 账户与免费计划正确后，再部署：
+
+```bash
+npm run deploy
+```
+
+部署后必须核对主页、静态资源、无 Key 时 API 拒绝、跨来源拒绝、项目导入导出，以及真实
+文件夹的授权、取消、撤权和重新连接。真实模型联调需由使用者安全输入自己的 Key。
+
+Workers Free 有每日请求数、CPU 和内存限制；超出免费额度可能导致请求失败。此站点的
+Origin 检查是浏览器跨站隔离，不是用户认证，不能保证公共 API 不会被消耗免费请求配额。
+图片成功响应以流式转发，避免在 Worker 中解析完整 base64。超过字节上限、超时或中途失败时，
+已经开始的 HTTP 200 响应会中断，界面会保留原图片。大图片仍可能触及免费运行时、响应或
+浏览器存储上限，失败后不要盲目重试；供应商可能已计费。
+
+## 官方参考
+
+- [Cloudflare Agent 环境设置](https://developers.cloudflare.com/agent-setup/prompt.md)
+- [Workers 静态资源](https://developers.cloudflare.com/workers/static-assets/)
+- [Workers 限制](https://developers.cloudflare.com/workers/platform/limits/)
+- [Workers 价格](https://developers.cloudflare.com/workers/platform/pricing/)
+- [目录选择接口](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker)
+
+Agent 环境设置中的全局 skills/MCP/OAuth 和可选 CLI 安装，与本项目运行依赖不同。
+它们不能代替部署前的账户授权或费用确认，也不是使用此项目的必要条件。

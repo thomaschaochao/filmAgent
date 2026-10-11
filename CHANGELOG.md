@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Independent Cloudflare Free web workbench with per-session BYOK and stateless fixed-provider relay.
+- User-selected local project folders, permission-aware refresh recovery, portable project packages, and conflict-safe saves.
+- Review-first cloud script, asset, shot, prompt, and reference-image workflows, with stale-result protection.
+- Environment-only configuration mode that disables dotenv and legacy credential-file loading.
+
+### Fixed
+
+- Enforce upload limits while receiving image bodies instead of buffering oversized uploads first.
+- Preserve DeepSeek provider/transport errors without duplicate JSON retries or raw error-body logging.
+- Keep the optional lightweight CrewAI tool entrypoint compatible without the CrewAI dependency.
+
+### Previously added
+
 - Master Production Agent workspace for guiding users from a rough idea to a staged AI-video prompt workflow.
 - Agent session history, suggested reply choices, plan approvals, stage approvals, checkpoints, cancellation, and resume controls.
 - Local retrieval foundation with optional Qdrant/FlagEmbedding support and keyword fallback.

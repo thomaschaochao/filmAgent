@@ -4,6 +4,9 @@
 
 FilmPilot 是一个**在本地运行、用于辅助 AI 视频生成的工具**。它负责准备和管理视频生成模型需要的创作材料，包括人物角色、场景、剧本、镜头列表、参考图片和可直接用于生产的提示词。FilmPilot 本身不是视频生成模型，而是帮助创作者在调用视频模型前获得更一致的输入和可重复的制作流程。
 
+另有独立的[免费云端 BYOK 工作台](cloud/README.md)：Cloudflare 托管网页，每人使用自己的
+模型 Key，项目保存在主动选择的电脑文件夹或可下载项目包中。原本地版安装方式保持不变。
+
 它的核心目标是保持项目中的人物与视觉资产一致，并辅助完成剧本创作、资产提示词编写、镜头拆分和镜头图片提示词生成。
 
 ## 核心功能
@@ -69,8 +72,8 @@ FilmPilot 采用本地优先的单体架构：浏览器界面和 REST API 由同
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/thomaschaochao/FilmPilot.git
-cd FilmPilot
+git clone https://github.com/thomaschaochao/filmAgent.git
+cd filmAgent
 py -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 Copy-Item config.local.env.example config.local.env
@@ -85,8 +88,8 @@ Copy-Item config.local.env.example config.local.env
 ### macOS 与 Linux
 
 ```bash
-git clone https://github.com/thomaschaochao/FilmPilot.git
-cd FilmPilot
+git clone https://github.com/thomaschaochao/filmAgent.git
+cd filmAgent
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 cp config.local.env.example config.local.env
