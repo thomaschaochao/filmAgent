@@ -1,5 +1,7 @@
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,6 +15,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    settings_source_mode: Literal["local", "environment"] = "local"
     app_name: str = "FilmPilot"
     database_url: str = "sqlite:///./data/filmagent.db"
     deepseek_api_key: SecretStr | None = None
@@ -51,6 +54,27 @@ class Settings(BaseSettings):
     agent_framework: str = "crewai"
     crewai_enabled: bool = True
 
+    def __init__(self, **values: Any) -> None:
+        """Select sources before Pydantic constructs its eager dotenv reader.
+
+        Set FILMAGENT_SETTINGS_SOURCE_MODE=environment before importing the app
+        to use process environment and explicit constructor values only. Local
+        mode keeps the existing dotenv and key-file behavior. The source mode
+        itself must come from the environment or constructor, never a file.
+        """
+        source_mode = values.get(
+            "settings_source_mode", os.environ.get("FILMAGENT_SETTINGS_SOURCE_MODE", "local")
+        )
+        if source_mode not in ("local", "environment"):
+            raise ValueError("Settings source mode must be 'local' or 'environment'.")
+        values["settings_source_mode"] = source_mode
+        if source_mode == "environment":
+            # Disabling a source in settings_customise_sources is too late:
+            # DotEnvSettingsSource has already read files during construction.
+            values["_env_file"] = None
+            values["_secrets_dir"] = ()
+        super().__init__(**values)
+
     @staticmethod
     def _secret_value(secret: SecretStr | None) -> str | None:
         if secret is None:
@@ -62,6 +86,12 @@ class Settings(BaseSettings):
         value = self._secret_value(self.deepseek_api_key)
         if value:
             return value
+
+        if self.settings_source_mode == "environment":
+            raise RuntimeError(
+                "DeepSeek API key is not configured. Set FILMAGENT_DEEPSEEK_API_KEY; "
+                "key-file loading is disabled in environment settings mode."
+            )
 
         key_path = self.deepseek_api_key_file
         if not key_path.is_absolute():

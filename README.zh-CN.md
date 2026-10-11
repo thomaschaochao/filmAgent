@@ -126,6 +126,11 @@ macOS 与 Linux：
 
 ## 数据与安全
 
+隔离测试或托管运行时，可在导入应用之前设置 `FILMAGENT_SETTINGS_SOURCE_MODE=environment`。
+此模式只使用进程环境和显式传入的配置，不读取 dotenv 文件、文件型 secrets 目录或
+`deepseekapi.txt`。默认 `local` 模式保留原有本地配置行为。这个开关本身不提供用户认证、
+多租户隔离或每请求 BYOK；公开云端版需使用独立的无状态入口。
+
 - SQLite 数据默认保存在 `data/`。
 - 生成及上传文件保存在 `storage/`。
 - `.env`、`config.local.env`、`deepseekapi.txt`、数据库、生成文件、缓存和测试产物均被 Git 忽略。

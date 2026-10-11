@@ -126,6 +126,12 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Interactive API documentati
 
 ## Data and security
 
+For isolated tests or hosted runtimes, set `FILMAGENT_SETTINGS_SOURCE_MODE=environment`
+before importing the application. This mode uses only process environment and explicit
+configuration, and never loads dotenv files, file-secret directories, or the legacy
+`deepseekapi.txt` fallback. The default `local` mode retains existing local behavior.
+This switch alone does not implement authentication, tenant isolation, or per-request BYOK.
+
 - SQLite data is stored under `data/` by default.
 - Generated and uploaded files are stored under `storage/`.
 - `.env`, `config.local.env`, `deepseekapi.txt`, databases, generated files, caches, and test artifacts are ignored by Git.
