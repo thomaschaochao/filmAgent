@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Review-first cloud script, asset, shot, prompt, and reference-image workflows, with stale-result protection.
 - Named script history with safe previews, deliberate draft restoration, and automatic pre-replacement snapshots.
 - Local production-brief TXT and formula-safe shot-list CSV downloads, separate from restorable project backups.
+- An original offline example project to explore the complete workflow without a model key or API calls.
 - Environment-only configuration mode that disables dotenv and legacy credential-file loading.
 - Least-permission GitHub CI for isolated Python/cloud tests and an unauthenticated Worker dry-run.
 
@@ -21,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Enforce upload limits while receiving image bodies instead of buffering oversized uploads first.
 - Preserve DeepSeek provider/transport errors without duplicate JSON retries or raw error-body logging.
 - Keep the optional lightweight CrewAI tool entrypoint compatible without the CrewAI dependency.
+- Stop script generation before a paid request when full history cannot retain the current draft; test cancellation and manual-retry races.
 - Bound local HTTP research downloads while streaming, reject credential-bearing/malformed URLs, and apply a transfer deadline.
 
 ### Previously added

@@ -245,6 +245,58 @@ test('workbench DOM flows preserve edits, isolate keys, and require proposal rev
       assert.equal(calls.length, priorCalls);
     });
 
+    await t.test('cancellation discards late results and manual retry never reuses an old request', async () => {
+      const original = $('#script-text').value, count = calls.length;
+      let finishFirst, finishSecond;
+      respond = () => new Promise(resolve => { finishFirst = resolve; });
+      click('#generate-script'); const first = calls.at(-1);
+      click('#cancel-request'); assert.equal(first.options.signal.aborted, true);
+      assert.match($('#activity-list').textContent, /仍可能产生费用/);
+      respond = () => new Promise(resolve => { finishSecond = resolve; }); click('#generate-script');
+      assert.equal(calls.length, count + 2);
+      finishFirst(generated({ script: '已取消的旧请求不能产生建议。' })); await settle();
+      assert.equal($('#proposal-dialog').open, false); assert.equal($('#script-text').value, original);
+      assert.equal($('#generate-script').disabled, true);
+      finishSecond(generated({ script: '只展示用户手动重新发起的结果。' })); await settle();
+      assert.equal($('#proposal-dialog').open, true); assert.match($('#proposal-content').textContent, /手动重新发起/);
+      click('#discard-proposal'); assert.equal($('#script-text').value, original);
+    });
+
+    await t.test('provider failure is sanitized and never silently retried', async () => {
+      const count = calls.length, original = $('#script-text').value;
+      respond = () => Promise.resolve(new Response(`unsafe provider echo ${textKey}`, { status: 429 }));
+      click('#generate-script'); await settle();
+      assert.equal(calls.length, count + 1); assert.match($('#notice').textContent, /频繁|额度/);
+      assert.equal($('#notice').textContent.includes(textKey), false); assert.equal($('#notice').textContent.includes('unsafe provider echo'), false);
+      assert.equal($('#script-text').value, original); assert.equal($('#proposal-dialog').open, false);
+    });
+
+    await t.test('full history blocks a paid generation before requesting an unsafe replacement', async () => {
+      click('#export-project'); const data = JSON.parse(await downloads.at(-1).text());
+      data.project.scripts = Array.from({ length: 100 }, (_, i) => ({ id: `version-${i}`, title: `历史 ${i}`, content: `既有历史 ${i}`, approved: false }));
+      const text = JSON.stringify(data), file = { name: 'full-history.filmpilot.json', size: new Blob([text]).size, text: async () => text };
+      Object.defineProperty($('#import-file'), 'files', { configurable: true, value: [file] });
+      $('#import-file').dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+      input('#script-text', '尚未有快照的新编辑，不能付费生成后才发现无法保存。');
+      const count = calls.length; click('#generate-script');
+      assert.equal(calls.length, count); assert.match($('#notice').textContent, /本次未发送请求/);
+      assert.equal($('#proposal-dialog').open, false); assert.match($('#script-text').value, /尚未有快照/);
+    });
+
+    await t.test('offline sample needs no key or network and confirms before replacing dirty work', async () => {
+      const before = $('#project-title').textContent, count = calls.length;
+      globalThis.confirm = () => false; click('#load-demo'); assert.equal($('#project-title').textContent, before);
+      globalThis.confirm = () => true; click('#load-demo');
+      assert.match($('#project-title').textContent, /示例/); assert.equal($('#script-text').readOnly, false);
+      assert.ok($('#asset-list').querySelectorAll('.asset-card').length >= 3);
+      assert.ok($('#shot-list').querySelectorAll('.shot-card').length >= 3);
+      assert.match($('#save-status').textContent, /未保存/); assert.match($('#notice').textContent, /未调用任何模型/);
+      assert.equal(calls.length, count);
+      click('#export-project'); const project = JSON.parse(await downloads.at(-1).text()).project;
+      assert.equal(project.script.status, 'draft'); assert.match(project.name, /示例/);
+      assert.equal(JSON.stringify(project).includes(textKey), false);
+    });
+
     await t.test('clear and pagehide remove credentials without a persisted fallback', async () => {
       click('#clear-keys'); assert.equal($('#deepseek-key').value, ''); assert.equal($('#openai-key').value, '');
       const count = calls.length; click('#generate-script'); assert.equal(calls.length, count);

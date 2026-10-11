@@ -1,5 +1,6 @@
 import { ProjectStore, validateProject, LIMITS as STORE_LIMITS } from './project-store.mjs';
 import { exportProductionBrief, exportShotListCsv } from './production-export.mjs';
+import { createDemoProject } from './demo-project.mjs';
 import { LIMITS, createProject, parseProposal, createProposal, applyProposal, saveScriptVersion, restoreScriptVersion, deleteScriptVersion, buildMessages, imageFromResponse, sanitizeError } from './workflows.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -98,6 +99,7 @@ function renderView() {
 function updateControls() {
   const project = state.project, busy = Boolean(state.request), fileBusy = state.fileBusy;
   $('#save-project').disabled = !project || fileBusy;
+  $('#load-demo').disabled = fileBusy;
   $('#export-production').disabled = !project || fileBusy;
   $('#export-shot-csv').disabled = !project || fileBusy || !project.shots.length;
   $('#apply-proposal').disabled = fileBusy;
@@ -227,6 +229,16 @@ async function fileOperation(operation) {
     if (state.proposal && !$('#proposal-dialog').open) showProposal();
   }
 }
+function loadDemoProject() {
+  if (!ensureCanSwitch()) return;
+  try {
+    const project = guardProject(createDemoProject());
+    cancelRequest(false); store.disconnect(); setProject(project, false);
+    notice('已载入离线示例，未调用任何模型。可直接编辑、查看资产和分镜，再选择保存文件夹或导出项目包。点击 AI 生成仍需你自己的 Key，并可能产生服务商费用。');
+    activity('已创建离线示例项目，没有模型调用。请保存或导出自己的修改。');
+    toast('离线示例已打开，无需 API Key。');
+  } catch (error) { report(error); }
+}
 function newDialog() {
   if (!ensureCanSwitch()) return;
   cancelRequest(false); $('#new-name').value = ''; $('#new-dialog').showModal(); $('#new-name').focus();
@@ -328,6 +340,9 @@ async function generate(kind, targetId = null) {
   if (!requireProject(kind === 'assets' || kind === 'shots')) return;
   const image = kind === 'image', provider = image ? $('#image-provider').value : 'deepseek';
   if (kind === 'script' && state.project.script.status === 'approved') { toast('请先解锁已确认的剧本。'); return; }
+  if (kind === 'script' && state.project.script.text.trim() && (state.project.scripts?.length || 0) >= STORE_LIMITS.scripts && !state.project.scripts.some(version => version.content === state.project.script.text)) {
+    notice('剧本历史已满，当前内容尚无安全快照。请先导出备份，再明确删除一个不需要的历史版本，之后再生成；本次未发送请求。', true); return;
+  }
   const target = image ? state.project.assets.find(asset => asset.id === targetId) : null;
   if (image && !target?.prompt?.trim()) { toast('请先为资产填写或生成图片提示词。'); return; }
   if (!requireKey(provider)) return;
@@ -391,6 +406,7 @@ $('#proposal-dialog').addEventListener('cancel', event => { event.preventDefault
 $('#settings-open').addEventListener('click', () => $('#settings-dialog').showModal());
 $('#clear-keys').addEventListener('click', () => { clearKeys(); toast('本页全部密钥已清除。'); });
 $$('[data-key]').forEach(input => { input.value = ''; input.addEventListener('input', () => { keys[input.dataset.key] = input.value.trim(); updateControls(); }); });
+$('#load-demo').addEventListener('click', loadDemoProject);
 $('#new-project').addEventListener('click', newDialog); $('#new-project-secondary').addEventListener('click', newDialog);
 $('#new-form').addEventListener('submit', event => { event.preventDefault(); newProject(true); }); $('#new-package').addEventListener('click', () => newProject(false));
 $('#open-folder').addEventListener('click', openFolder); $('#welcome-open').addEventListener('click', openFolder);
