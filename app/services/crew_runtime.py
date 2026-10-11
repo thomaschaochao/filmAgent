@@ -29,6 +29,10 @@ class CrewRuntimeToolHandle:
     def run(self, **kwargs: Any) -> dict[str, Any]:
         return execute_crewai_tool(self.name, **kwargs)
 
+    def _run(self, **kwargs: Any) -> dict[str, Any]:
+        """Keep the lightweight fallback compatible with CrewAI's tool entrypoint."""
+        return self.run(**kwargs)
+
 
 def crew_runtime_factory_status() -> dict[str, Any]:
     tool_descriptors = build_crewai_tool_descriptors()

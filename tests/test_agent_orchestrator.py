@@ -6,7 +6,7 @@ import app.main as main
 import app.services.orchestrator as orchestrator
 from app.services import crew as crew_service
 from app.services.crew_runner import CrewStageTool, run_stage_tools
-from app.services.crew_runtime import instantiate_crewai_runtime
+from app.services.crew_runtime import CrewRuntimeToolHandle, instantiate_crewai_runtime
 from app.services.crew_tool_executor import CrewToolExecutionError, execute_crewai_tool
 from app.services.crew_tools import build_crewai_tool_descriptors, build_tool_catalog
 from app.services.rag import LocalRAG
@@ -737,6 +737,13 @@ def test_crewai_runtime_instantiates_agents_tasks_and_crew():
         create_project_tool = next(tool for tool in producer_tools if tool.name == "create_project")
         create_project_tool._run()
     assert "api_key" not in str(result.status).lower()
+
+
+@pytest.mark.parametrize("entrypoint", ["run", "_run"])
+def test_fallback_tool_entrypoints_keep_approval_checks(entrypoint):
+    tool = CrewRuntimeToolHandle("create_project", "Create a project", {}, {})
+    with pytest.raises(CrewToolExecutionError, match="requires an approved workflow plan_id"):
+        getattr(tool, entrypoint)()
 
 
 def test_crewai_write_tools_require_approved_plan_id():
