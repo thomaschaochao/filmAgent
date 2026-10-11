@@ -1,0 +1,20 @@
+{
+  "name": "filmagent-byok-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless BYOK Cloudflare Worker and local-first FilmAgent web app",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check worker.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.2",
+    "wrangler": "4.149.0"
+  }
+}
