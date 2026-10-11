@@ -126,6 +126,7 @@ from app.services.prompt_strategy import (
     classify_shot_prompt_strategy,
 )
 from app.services.rag import LocalRAG
+from app.services.uploads import read_limited_body
 from app.services.web_tools import WebToolError, fetch_page, search_web
 from app.services.workflow import (
     extract_assets,
@@ -865,9 +866,7 @@ async def upload_asset_image(asset_id: str, request: Request, db: DbSession) -> 
     extension = extensions.get(content_type)
     if extension is None:
         raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, WebP, or GIF image")
-    content = await request.body()
-    if not content or len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Image must be between 1 byte and 10 MB")
+    content = await read_limited_body(request, max_bytes=10 * 1024 * 1024)
     _ensure_legacy_asset_image(db, asset)
     db.query(AssetImage).filter(AssetImage.asset_id == asset.id).update(
         {AssetImage.is_primary: False}
