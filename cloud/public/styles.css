@@ -18,3 +18,4 @@
 
 .shot-order-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-left:auto}.shot-card-header .shot-order-actions .text-button{margin-left:0}.shot-card:focus{outline:2px solid #c6b8f0;outline-offset:4px}
 @media(max-width:640px){.shot-card-header{flex-wrap:wrap}.shot-order-actions{width:100%;justify-content:flex-end;gap:17px;margin-top:3px}}
+@media(max-width:640px){.sidebar nav .nav-item{white-space:nowrap;padding:12px 4px;gap:4px}.sidebar-bottom .nav-item{width:auto;white-space:nowrap}}

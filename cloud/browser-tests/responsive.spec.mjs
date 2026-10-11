@@ -19,6 +19,11 @@ test('clean demo is usable at desktop and mobile widths', async ({ page, network
     await navigate(page, 'overview');
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.locator('#deepseek-key')).toHaveValue('');
+    await expect(page.locator('#toast')).not.toBeVisible({ timeout: 10_000 });
+    if (label === 'mobile') {
+      await expect(page.locator('.sidebar nav .nav-item').last()).toHaveCSS('white-space', 'nowrap');
+      await expect(page.locator('#settings-open')).toHaveCSS('white-space', 'nowrap');
+    }
     const path = `browser-artifacts/demo-${label}.png`;
     await page.screenshot({ path, fullPage: false, animations: 'disabled' });
     expect((await stat(path)).size).toBeLessThan(2 * 1024 * 1024);
