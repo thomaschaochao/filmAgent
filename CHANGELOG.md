@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Enforce upload limits while receiving image bodies instead of buffering oversized uploads first.
 - Preserve DeepSeek provider/transport errors without duplicate JSON retries or raw error-body logging.
 - Keep the optional lightweight CrewAI tool entrypoint compatible without the CrewAI dependency.
+- Bound local HTTP research downloads while streaming, reject credential-bearing/malformed URLs, and apply a transfer deadline.
 
 ### Previously added
 

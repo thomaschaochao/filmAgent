@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from html.parser import HTMLParser
@@ -39,14 +40,26 @@ class _TextExtractor(HTMLParser):
 
 
 def validate_public_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise WebToolError("The page URL is invalid") from exc
+    if parsed.scheme not in {"http", "https"} or not hostname:
         raise WebToolError("Only public HTTP and HTTPS URLs are allowed")
-    hostname = parsed.hostname.casefold()
+    if parsed.username is not None or parsed.password is not None:
+        raise WebToolError("URLs containing credentials are not allowed")
+    hostname = hostname.casefold()
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
         raise WebToolError("Local and private network URLs are not allowed")
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or 443)}
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(
+                hostname, port if port is not None else (443 if parsed.scheme == "https" else 80)
+            )
+        }
     except socket.gaierror as exc:
         raise WebToolError("The web host could not be resolved") from exc
     for address in addresses:
@@ -78,24 +91,40 @@ async def fetch_page(url: str, settings: Settings | None = None) -> dict:
     if markdown:
         return {"url": current_url, "content": markdown, "method": "crawl4ai"}
 
-    async with httpx.AsyncClient(timeout=settings.web_timeout_seconds) as client:
-        for _ in range(4):
-            response = await client.get(
-                current_url,
-                follow_redirects=False,
-                headers={"User-Agent": "FilmPilot research assistant/1.0"},
-            )
-            if response.is_redirect:
-                location = response.headers.get("location")
-                if not location:
-                    raise WebToolError("The page returned an invalid redirect")
-                current_url = validate_public_url(urljoin(current_url, location))
-                continue
-            response.raise_for_status()
-            content = response.content[: settings.web_max_bytes]
-            extractor = _TextExtractor()
-            extractor.feed(content.decode(response.encoding or "utf-8", errors="replace"))
-            return {"url": current_url, "content": extractor.text(), "method": "httpx"}
+    try:
+        # HTTPX's timeout applies to each I/O operation, not the whole transfer.
+        async with asyncio.timeout(settings.web_timeout_seconds):
+            async with httpx.AsyncClient(timeout=settings.web_timeout_seconds) as client:
+                for _ in range(4):
+                    async with client.stream(
+                        "GET",
+                        current_url,
+                        follow_redirects=False,
+                        headers={"User-Agent": "FilmPilot research assistant/1.0"},
+                    ) as response:
+                        if response.is_redirect:
+                            location = response.headers.get("location")
+                            if not location:
+                                raise WebToolError("The page returned an invalid redirect")
+                            current_url = validate_public_url(urljoin(current_url, location))
+                            continue
+                        response.raise_for_status()
+                        content = bytearray()
+                        chunk_size = min(64 * 1024, settings.web_max_bytes + 1)
+                        async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                            if len(content) + len(chunk) > settings.web_max_bytes:
+                                raise WebToolError("The page exceeds the maximum allowed size")
+                            content.extend(chunk)
+                        extractor = _TextExtractor()
+                        extractor.feed(
+                            content.decode(response.encoding or "utf-8", errors="replace")
+                        )
+                        return {"url": current_url, "content": extractor.text(), "method": "httpx"}
+    except TimeoutError as exc:
+        raise WebToolError("The page request timed out") from exc
+    except (httpx.InvalidURL, httpx.RemoteProtocolError) as exc:
+        # HTTPX parses Location even when automatic redirects are disabled.
+        raise WebToolError("The page returned an invalid URL or HTTP response") from exc
     raise WebToolError("The page redirected too many times")
 
 
