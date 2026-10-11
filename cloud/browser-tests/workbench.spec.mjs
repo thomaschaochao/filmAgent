@@ -67,10 +67,22 @@ test('real JSON download and file import roundtrip preserves history and exclude
   const script = await page.locator('#script-text').inputValue();
   const versions = await page.locator('#script-version-select option').count();
   await setSyntheticKey(page);
+  // Observe, without intercepting, the filename supplied to the real download.
+  // Keep Chinese text here to catch regressions in Chromium's OS-locale setup.
+  await page.evaluate(() => {
+    window.syntheticDownloadName = null;
+    document.addEventListener('click', event => {
+      const anchor = event.target.closest('a[download]');
+      if (anchor) window.syntheticDownloadName = anchor.download;
+    }, { capture: true });
+  });
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-project').click();
   const download = await downloadPromise;
+  const suppliedFilename = await page.evaluate(() => window.syntheticDownloadName);
+  expect(suppliedFilename).toBe('示例-最后一班渡船.filmpilot.json');
   expect(download.suggestedFilename()).toMatch(/\.filmpilot\.json$/);
+  expect(download.suggestedFilename()).toBe(suppliedFilename);
   const bytes = await readFile(await download.path());
   const source = bytes.toString('utf8'), data = JSON.parse(source);
   expect(data.format).toBe('filmpilot-package');

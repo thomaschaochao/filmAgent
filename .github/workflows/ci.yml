@@ -103,9 +103,11 @@ jobs:
           env -i PATH="$PATH" HOME="$RUNNER_TEMP/browser-home" CI=true \
             npx --no-install playwright install --with-deps chromium
       - name: Run isolated browser tests with synthetic data and mocked providers
+        # Chromium's POSIX filename conversion needs a UTF-8 process locale.
+        # Browser UI locale alone does not preserve Unicode download names.
         run: |
           env -i PATH="$PATH" HOME="$RUNNER_TEMP/browser-home" CI=true \
-            npm run test:browser
+            LANG=C.UTF-8 LC_ALL=C.UTF-8 npm run test:browser
       - name: Upload only clean synthetic demo screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
