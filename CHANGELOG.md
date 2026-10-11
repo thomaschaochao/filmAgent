@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Accessible shot ordering and independent duplication with sequential numbering and stale-proposal protection.
 - Environment-only configuration mode that disables dotenv and legacy credential-file loading.
 - Least-permission GitHub CI for isolated Python/cloud tests and an unauthenticated Worker dry-run.
+- Public-only Chromium CI for real UI flows with mocked providers, OPFS fixtures and short-lived synthetic screenshots.
 
 ### Fixed
 

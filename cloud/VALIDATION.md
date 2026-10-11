@@ -22,7 +22,10 @@
 - Shot editing helpers: 14 tests passed for identity-preserving moves, independent duplicates,
   300-shot limits, atomic metadata failures and package/export order.
 - Static security-header policy: 1 test passed.
-- Total cloud tests: 203 passed.
+- Browser fixture server allowlist: 1 test passed, including refusal of API, credential-like and traversal paths.
+- Total cloud Node tests: 204 passed.
+- Seven Playwright Chromium user-flow tests have passed syntax/discovery checks; actual browser execution
+  is pending the new public-only GitHub CI job. Screenshots are limited to two synthetic demo images.
 - GitHub Actions CI definition validates both editions without deployment or model credentials.
   YAML/security/shell checks passed locally. The initial integrated revision `a39192a` passed both
   jobs in [GitHub Actions run 38124826315](https://github.com/thomaschaochao/filmAgent/actions/runs/38124826315),

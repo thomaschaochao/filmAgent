@@ -15,6 +15,8 @@ concurrency:
 jobs:
   python:
     name: Python lint and tests
+    # Standard GitHub-hosted runners are free only while this repository is public.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -41,6 +43,8 @@ jobs:
 
   cloud:
     name: Cloud tests and dry-run build
+    # Standard GitHub-hosted runners are free only while this repository is public.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -71,3 +75,45 @@ jobs:
             WRANGLER_SEND_METRICS=false WRANGLER_SEND_ERROR_REPORTS=false \
             node node_modules/wrangler/bin/wrangler.js deploy --dry-run \
               --outdir "$RUNNER_TEMP/worker-dry-run"
+
+  browser:
+    name: Chromium user-flow tests
+    # Never move this job to a paid larger runner or run it in a private repository.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install official Chromium and operating-system dependencies
+        run: |
+          mkdir -p "$RUNNER_TEMP/browser-home"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/browser-home" CI=true \
+            npx --no-install playwright install --with-deps chromium
+      - name: Run isolated browser tests with synthetic data and mocked providers
+        run: |
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/browser-home" CI=true \
+            npm run test:browser
+      - name: Upload only clean synthetic demo screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: synthetic-demo-screenshots
+          path: |
+            cloud/browser-artifacts/demo-desktop.png
+            cloud/browser-artifacts/demo-mobile.png
+          retention-days: 1
+          if-no-files-found: warn
+          include-hidden-files: false

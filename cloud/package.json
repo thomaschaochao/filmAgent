@@ -6,14 +6,17 @@
   "description": "Stateless BYOK Cloudflare Worker and local-first FilmAgent web app",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check worker.mjs && node --check public/app.mjs && node --check public/project-store.mjs && node --check public/workflows.mjs && node --check public/production-export.mjs && node --check public/demo-project.mjs && node --check public/shot-editing.mjs",
+    "check": "node --check worker.mjs && node --check public/app.mjs && node --check public/project-store.mjs && node --check public/workflows.mjs && node --check public/production-export.mjs && node --check public/demo-project.mjs && node --check public/shot-editing.mjs && npm run check:browser",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test:browser": "playwright test",
+    "check:browser": "node --check playwright.config.mjs && node --check browser-tests/static-server.mjs && node --check browser-tests/fixtures.mjs && node --check browser-tests/workbench.spec.mjs && node --check browser-tests/folder.spec.mjs && node --check browser-tests/responsive.spec.mjs && playwright test --list"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "jsdom": "30.1.2",
     "wrangler": "4.149.0"
   }
