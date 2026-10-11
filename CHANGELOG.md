@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Preserve DeepSeek provider/transport errors without duplicate JSON retries or raw error-body logging.
 - Keep the optional lightweight CrewAI tool entrypoint compatible without the CrewAI dependency.
 - Stop script generation before a paid request when full history cannot retain the current draft; test cancellation and manual-retry races.
+- Reconnect an active project folder without a misleading discard-work confirmation; retain unsaved edits.
 - Bound local HTTP research downloads while streaming, reject credential-bearing/malformed URLs, and apply a transfer deadline.
 - Bound local image JSON, binary and compressed responses; validate envelopes and separate unauthenticated public-asset downloads.
 

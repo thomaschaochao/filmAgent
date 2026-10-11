@@ -127,7 +127,12 @@ test('folder UI persists real synthetic files, handles revocation, and restores 
     click('#save-project'); await until(() => !$('#save-project').disabled);
     assert.match($('#notice').textContent, /权限/); assert.match($('#save-status').textContent, /未保存/);
     assert.equal(JSON.parse(await readFile(join(path, 'project.json'), 'utf8')).script.text, '第一版剧本。');
+    let switchConfirmations = 0;
+    install('confirm', () => { switchConfirmations++; return false; });
     click('#notice button'); await until(() => !$('#save-project').disabled); assert.equal(state.prompts, 1);
+    assert.equal(switchConfirmations, 0, 'reconnect preserves the active project and must not ask to leave it');
+    assert.equal($('#script-text').value, '撤权后的未保存修改。');
+    install('confirm', () => true);
     click('#save-project'); await until(() => !$('#save-project').disabled);
     assert.equal(JSON.parse(await readFile(join(path, 'project.json'), 'utf8')).script.text, '撤权后的未保存修改。');
 

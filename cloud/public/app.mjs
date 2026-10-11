@@ -309,7 +309,7 @@ function exportProject() {
     updateSummary(); activity('已发起项目包下载；等待确认浏览器下载完成。'); toast('已发起项目包下载，请确认文件已保存在设备上。');
   } catch (error) { report(error); }
 }
-async function reconnectFolder() { if (store.status.reconnectNeeded && state.project && !ensureCanSwitch()) return; await fileOperation(async () => { const result = await store.reconnect(); if (result?.project && !state.project) { setProject(result.project, true); activity('已重新授权并恢复最近的本地项目。'); } else { notice('权限已恢复，请点击“保存项目”保存当前修改。'); activity('已重新获得当前文件夹写入权限。'); } }); }
+async function reconnectFolder() { await fileOperation(async () => { const result = await store.reconnect(); if (result?.project && !state.project) { setProject(result.project, true); activity('已重新授权并恢复最近的本地项目。'); } else { notice('权限已恢复，请点击“保存项目”保存当前修改。'); activity('已重新获得当前文件夹写入权限。'); } }); }
 async function importProject(file) {
   if (!file || !ensureCanSwitch()) return;
   cancelRequest(false);
