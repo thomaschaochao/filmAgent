@@ -2,7 +2,7 @@
 
 ## Scope checked in the isolated cloud workspace
 
-- Original Python application: 200 Pytest tests passed.
+- Original Python application: 308 Pytest tests passed.
 - Python lint: `ruff check app tests` passed.
 - Original frontend: `node --check app/static/app.js` passed.
 - Cloud relay: 78 mocked Node tests passed, including per-request key isolation,

@@ -142,6 +142,18 @@ This switch alone does not implement authentication, tenant isolation, or per-re
 - Provider keys are only read server-side and are not returned by API responses.
 - Back up `data/` and `storage/` before upgrading or moving an installation.
 
+Local image generation bounds provider JSON to 41 MiB and image bytes to 30 MiB while
+receiving and decompressing responses. It does not follow provider or asset redirects.
+Custom/local provider endpoints still work with base64 results; returned asset URLs must
+resolve to public HTTP(S) hosts and are fetched without provider authentication or cookies.
+Only identity, gzip and RFC-style deflate responses are supported; malformed or concatenated
+compressed streams fail safely. HTTP timeouts remain per-operation, and DNS validation is
+not connection-pinned, so it does not eliminate DNS rebinding.
+
+The original Python edition has no public multi-user authentication. Keep its listener on
+loopback; do not expose it directly to the internet. Use the separate [cloud edition](cloud/README.md)
+for the stateless, per-user BYOK web deployment.
+
 ## Development
 
 ```powershell

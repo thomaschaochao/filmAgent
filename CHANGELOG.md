@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Keep the optional lightweight CrewAI tool entrypoint compatible without the CrewAI dependency.
 - Stop script generation before a paid request when full history cannot retain the current draft; test cancellation and manual-retry races.
 - Bound local HTTP research downloads while streaming, reject credential-bearing/malformed URLs, and apply a transfer deadline.
+- Bound local image JSON, binary and compressed responses; validate envelopes and separate unauthenticated public-asset downloads.
 
 ### Previously added
 
