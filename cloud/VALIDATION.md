@@ -2,17 +2,22 @@
 
 ## Scope checked in the isolated cloud workspace
 
-- Original Python application: 168 Pytest tests passed.
+- Original Python application: 200 Pytest tests passed.
 - Python lint: `ruff check app tests` passed.
 - Original frontend: `node --check app/static/app.js` passed.
 - Cloud relay: 78 mocked Node tests passed, including per-request key isolation,
   fixed upstreams, no redirects, sanitized failures, cancellation and bounded image streaming.
 - Local project store: 41 mocked Node tests passed, including strict import validation,
   complete image roundtrip, revoked permissions, refresh recovery, concurrent edits and interrupted saves.
-- Cloud workflow helpers: 15 tests passed.
-- JSDOM workbench interaction suite: 10 subtests plus its parent passed, covering
+- Cloud workflow helpers: 28 tests passed, including atomic script snapshots and safe restoration.
+- JSDOM workbench interaction suite: 12 subtests plus its parent passed, covering
   project-package mode, model-key isolation, proposal review, stale response rejection,
-  image generation mocks, invalid imports, file-save races and unload protection.
+  image generation mocks, invalid imports, file-save races, unload protection and history controls.
+- A separate folder UI integration test passed with real synthetic temporary files and mocked
+  directory handles/IndexedDB, covering save/reopen, permission loss, explicit reconnect and refresh.
+- Total cloud tests: 161 passed.
+- GitHub Actions CI definition validates both editions without deployment or model credentials.
+  YAML/security/shell checks passed locally; the remote workflow has not yet run.
 - All cloud JavaScript entrypoints passed syntax checks.
 - Wrangler 4.149.0 dry-run bundled successfully with only the `ASSETS` binding.
 

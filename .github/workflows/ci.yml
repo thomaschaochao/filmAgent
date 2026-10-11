@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FILMAGENT_SETTINGS_SOURCE_MODE: environment
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install ".[dev]"
+      - name: Lint Python
+        run: python -m ruff check app tests
+      - name: Run isolated Python tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/python-home"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/python-home" \
+            FILMAGENT_SETTINGS_SOURCE_MODE=environment \
+            python -m pytest
+
+  cloud:
+    name: Cloud tests and dry-run build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run isolated cloud tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/cloud-home"
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/cloud-home" CI=true npm test
+      - name: Check JavaScript syntax
+        run: npm run check
+      - name: Build Worker without deploying or authenticating
+        run: |
+          env -i PATH="$PATH" HOME="$RUNNER_TEMP/cloud-home" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/cloud-home/.config" CI=true \
+            WRANGLER_SEND_METRICS=false WRANGLER_SEND_ERROR_REPORTS=false \
+            node node_modules/wrangler/bin/wrangler.js deploy --dry-run \
+              --outdir "$RUNNER_TEMP/worker-dry-run"
