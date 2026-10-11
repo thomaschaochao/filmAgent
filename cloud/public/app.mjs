@@ -1,4 +1,5 @@
 import { ProjectStore, validateProject, LIMITS as STORE_LIMITS } from './project-store.mjs';
+import { exportProductionBrief, exportShotListCsv } from './production-export.mjs';
 import { LIMITS, createProject, parseProposal, createProposal, applyProposal, saveScriptVersion, restoreScriptVersion, deleteScriptVersion, buildMessages, imageFromResponse, sanitizeError } from './workflows.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -97,6 +98,8 @@ function renderView() {
 function updateControls() {
   const project = state.project, busy = Boolean(state.request), fileBusy = state.fileBusy;
   $('#save-project').disabled = !project || fileBusy;
+  $('#export-production').disabled = !project || fileBusy;
+  $('#export-shot-csv').disabled = !project || fileBusy || !project.shots.length;
   $('#apply-proposal').disabled = fileBusy;
   $('#save-project').textContent = fileBusy ? '文件处理中…' : store.status.mode === 'folder' ? '保存项目 ↗' : '导出以保存 ↗';
   for (const selector of ['#open-folder', '#welcome-open', '#new-project', '#new-project-secondary', '#attach-folder', '#export-project', '#add-asset', '#add-shot', '#approve-script', '#unlock-script']) $(selector).disabled = fileBusy;
@@ -261,10 +264,26 @@ async function saveProject() {
   if (store.status.mode !== 'folder') { exportProject(); return; }
   await fileOperation(async () => { const revision = state.revision; const result = await store.save(guardProject(state.project)); if (state.revision === revision) { state.project = normalizeForUI(result); state.savedRevision = revision; } notice(); activity('项目已保存到选定的本地文件夹。'); toast('项目已保存。'); });
 }
+function downloadLocalFile(blob, filename) {
+  const url = URL.createObjectURL(blob), anchor = document.createElement('a');
+  anchor.href = url; anchor.download = filename; document.body.append(anchor);
+  try { anchor.click(); } finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000); }
+}
+function exportProduction(kind) {
+  if (!state.project || state.fileBusy) return;
+  try {
+    const project = guardProject(state.project);
+    const result = kind === 'csv' ? exportShotListCsv(project) : exportProductionBrief(project);
+    downloadLocalFile(new Blob([result.text], { type: result.mimeType }), result.filename);
+    notice('已发起制作资料下载，请确认文件已保存。此文件不含参考图原文件或剧本历史，不能代替可恢复的项目包；项目的未保存状态保持不变。');
+    activity(`已发起${kind === 'csv' ? '镜头表 CSV' : '制作单 TXT'}下载。请另行保存项目或导出项目包。`);
+    toast('制作资料已发起下载，请检查浏览器下载。');
+  } catch (error) { report(error); }
+}
 function exportProject() {
   if (!state.project || state.fileBusy) return;
   try {
-    const { blob, filename } = store.exportPackage(guardProject(state.project)); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    const { blob, filename } = store.exportPackage(guardProject(state.project)); downloadLocalFile(blob, filename);
     // Download initiation is not proof of persistence. Keep the unload warning until explicit acknowledgement.
     const exportedRevision = state.revision, exportedId = state.project.id;
     notice('已发起项目包下载。请检查浏览器下载，确认文件已保存在设备上。');
@@ -376,6 +395,8 @@ $('#new-project').addEventListener('click', newDialog); $('#new-project-secondar
 $('#new-form').addEventListener('submit', event => { event.preventDefault(); newProject(true); }); $('#new-package').addEventListener('click', () => newProject(false));
 $('#open-folder').addEventListener('click', openFolder); $('#welcome-open').addEventListener('click', openFolder);
 $('#attach-folder').addEventListener('click', attachFolder); $('#save-project').addEventListener('click', saveProject); $('#export-project').addEventListener('click', exportProject);
+$('#export-production').addEventListener('click', () => exportProduction('txt'));
+$('#export-shot-csv').addEventListener('click', () => exportProduction('csv'));
 $$('.import-trigger').forEach(button => button.addEventListener('click', () => { if (!state.fileBusy) $('#import-file').click(); }));
 $('#import-file').addEventListener('change', event => { const file = event.target.files[0]; event.target.value = ''; importProject(file); });
 for (const [selector, field] of [['#project-name', 'name'], ['#project-description', 'description']]) $(selector).addEventListener('input', event => { if (state.project) { state.project[field] = event.target.value; touch(); } });

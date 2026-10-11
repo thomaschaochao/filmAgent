@@ -25,12 +25,12 @@ test('workbench DOM flows preserve edits, isolate keys, and require proposal rev
   window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   window.HTMLElement.prototype.scrollIntoView = function () {};
-  const downloads = [];
+  const downloads = [], downloadNames = [];
   const oldCreate = URL.createObjectURL;
   const oldRevoke = URL.revokeObjectURL;
   URL.createObjectURL = blob => { downloads.push(blob); return 'blob:test-download'; };
   URL.revokeObjectURL = () => {};
-  window.HTMLAnchorElement.prototype.click = function () {};
+  window.HTMLAnchorElement.prototype.click = function () { downloadNames.push(this.download); };
   const calls = [];
   let respond = () => Promise.resolve(Response.json({ choices: [{ message: { content: '{}' } }] }));
   install('fetch', (url, options) => { calls.push({ url, options }); return respond(url, options); });
@@ -220,6 +220,29 @@ test('workbench DOM flows preserve edits, isolate keys, and require proposal rev
       assert.equal($('#script-version-select').options.length, project.scripts.length);
       assert.equal($('#script-text').value, project.script.text);
       assert.equal($('#script-version-preview').textContent, project.scripts.at(-1).content);
+    });
+
+    await t.test('production downloads are guarded handoffs and never count as saved project backups', async () => {
+      assert.equal($('#export-shot-csv').disabled, true);
+      input('#script-text', '仅作制作交付的当前剧本。');
+      const dirtyStatus = $('#save-status').textContent;
+      const priorCalls = calls.length;
+      click('#export-production');
+      const brief = await downloads.at(-1).text();
+      assert.match(downloadNames.at(-1), /\.txt$/); assert.match(brief, /仅作制作交付/);
+      assert.equal(brief.includes(textKey), false); assert.equal(brief.includes('data:image/'), false);
+      assert.equal($('#save-status').textContent, dirtyStatus); assert.match($('#notice').textContent, /不能代替/);
+      assert.equal($('#notice button'), null);
+      click('#add-shot'); input('#shot-list [data-field="description"]', '=SUM(1,2)');
+      input('#shot-list [data-field="dialogue"]', '第一行\n第二行说“出发”。');
+      assert.equal($('#export-shot-csv').disabled, false); click('#export-shot-csv');
+      const csv = await downloads.at(-1).text();
+      assert.match(downloadNames.at(-1), /\.csv$/); assert.match(csv, /'\=SUM\(1,2\)/);
+      assert.match(csv, /第一行\n第二行/); assert.match($('#save-status').textContent, /未保存/);
+      const before = downloads.length; input('#script-text', `不得导出的正文 ${textKey}`); click('#export-production');
+      assert.equal(downloads.length, before); assert.equal($('#notice').textContent.includes(textKey), false);
+      input('#script-text', '已移除密钥的当前剧本。');
+      assert.equal(calls.length, priorCalls);
     });
 
     await t.test('clear and pagehide remove credentials without a persisted fallback', async () => {

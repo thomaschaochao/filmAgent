@@ -10,14 +10,18 @@
 - Local project store: 41 mocked Node tests passed, including strict import validation,
   complete image roundtrip, revoked permissions, refresh recovery, concurrent edits and interrupted saves.
 - Cloud workflow helpers: 28 tests passed, including atomic script snapshots and safe restoration.
-- JSDOM workbench interaction suite: 12 subtests plus its parent passed, covering
+- JSDOM workbench interaction suite: 13 subtests plus its parent passed, covering
   project-package mode, model-key isolation, proposal review, stale response rejection,
   image generation mocks, invalid imports, file-save races, unload protection and history controls.
 - A separate folder UI integration test passed with real synthetic temporary files and mocked
   directory handles/IndexedDB, covering save/reopen, permission loss, explicit reconnect and refresh.
-- Total cloud tests: 161 passed.
+- Production export helpers: 14 tests passed, including formula-injection protection, safe filenames,
+  exact quoting/newlines, strict project validation, image/history exclusion and expanded output limits.
+- Total cloud tests: 176 passed.
 - GitHub Actions CI definition validates both editions without deployment or model credentials.
-  YAML/security/shell checks passed locally; the remote workflow has not yet run.
+  YAML/security/shell checks passed locally. The initial integrated revision `a39192a` passed both
+  jobs in [GitHub Actions run 38124826315](https://github.com/thomaschaochao/filmAgent/actions/runs/38124826315),
+  including fresh dependency installs and Node 22. Later changes must rerun this workflow.
 - All cloud JavaScript entrypoints passed syntax checks.
 - Wrangler 4.149.0 dry-run bundled successfully with only the `ASSETS` binding.
 

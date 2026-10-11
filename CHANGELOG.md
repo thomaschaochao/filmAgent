@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - User-selected local project folders, permission-aware refresh recovery, portable project packages, and conflict-safe saves.
 - Review-first cloud script, asset, shot, prompt, and reference-image workflows, with stale-result protection.
 - Named script history with safe previews, deliberate draft restoration, and automatic pre-replacement snapshots.
+- Local production-brief TXT and formula-safe shot-list CSV downloads, separate from restorable project backups.
 - Environment-only configuration mode that disables dotenv and legacy credential-file loading.
 - Least-permission GitHub CI for isolated Python/cloud tests and an unauthenticated Worker dry-run.
 
